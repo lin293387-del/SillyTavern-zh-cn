@@ -1,0 +1,83 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Full development mode",
+			"detail": "Run all Watch scripts",
+			"group": "build",
+			"dependsOn": [
+				"TypeScript - Watch",
+				"ESLint - Watch",
+				"API - Watch"
+			],
+			"isBackground": true,
+			"problemMatcher": []
+		},
+		{
+			"type": "npm",
+			"script": "compile:watch",
+			"problemMatcher": [
+				"$tsc-watch"
+			],
+			"group": "build",
+			"label": "TypeScript - Watch",
+			"detail": "Run tsc in watch mode",
+			"isBackground": true
+		},
+		{
+			"type": "npm",
+			"script": "lint:watch",
+			"group": "build",
+			"problemMatcher": {
+				"owner": "eslint",
+				"source": "eslint",
+				"fileLocation": "absolute",
+				"background": {
+					"activeOnStart": false,
+					"beginsPattern": "\\[nodemon\\] starting",
+					"endsPattern": "\\[nodemon\\] (clean exit|app crashed)"
+				},
+				"pattern": [
+					{
+						"regexp": "^((?:[a-zA-Z]:)*[\\\\\\/.]+.*?)$",
+						"kind": "location",
+						"file": 1
+					},
+					{
+						"regexp": "^\\s+(\\d+):(\\d+)\\s+(error|warning|info)\\s+(.+?)(?:\\s\\s+(.*))?$",
+						"line": 1,
+						"column": 2,
+						"severity": 3,
+						"message": 4,
+						// "code": 5, // https://github.com/microsoft/vscode/issues/128352
+						"loop": true
+					}
+				]
+			},
+			"isBackground": true,
+			"label": "ESLint - Watch",
+			"detail": "Run ESLint in watch mode"
+		},
+		{
+			"type": "npm",
+			"script": "api:watch",
+			"group": "build",
+			"problemMatcher": {
+				"owner": "api-extractor",
+				"source": "api-extractor",
+				"fileLocation": "absolute",
+				"pattern": {
+					"regexp": "^(.*\\.d\\.ts):(\\d+):(\\d+)$"
+				},
+				"background": {
+					"activeOnStart": true,
+					"beginsPattern": "\\[nodemon\\] starting",
+					"endsPattern": "\\[nodemon\\] (clean exit|app crashed)"
+				}
+			},
+			"label": "API - Watch",
+			"detail": "api-extractor",
+			"isBackground": true
+		}
+	]
+}

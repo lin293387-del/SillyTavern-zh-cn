@@ -1,0 +1,13 @@
+# 项目概览
+- 名称：SillyTavern（AGPL-3.0 授权）
+- 目标：为本地/远端大语言模型服务提供可扩展的 Web 前端与会话管理能力
+- 技术栈：Node.js >=18 + Express 后端；前端为传统多页面 + Webpack 打包公共库；大量可选集成（OpenAI、Kobold、NovelAI 等）
+- 核心目录：
+  - `server.js` / `src/server-main.js`：命令行解析、Express 服务器初始化、Webpack 中间件、插件加载
+  - `src/endpoints/`：REST API 路由按功能分组（角色卡、聊天、后端接入、翻译等）
+  - `public/`：静态资源与浏览器脚本，`public/lib.js` 通过 Webpack 输出共享库
+  - `data/`：用户数据、缓存、上传内容（运行期写入）
+  - `plugins/`：服务端插件容器，支持自动更新
+  - `default/`：默认配置、模板与静态内容
+  - `docker/`：镜像构建脚本，`Dockerfile` + `docker-compose.yml`
+- 关键特性：多后端代理、用户/会话管理、CSRF/Session 安全措施、插件体系、缩略图和备份机制

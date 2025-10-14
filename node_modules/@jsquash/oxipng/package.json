@@ -1,0 +1,35 @@
+{
+  "name": "@jsquash/oxipng",
+  "version": "2.3.0",
+  "main": "index.js",
+  "description": "Wasm png optimiser supporting the browser. Repackaged from Squoosh App.",
+  "repository": "jamsinclair/jSquash/packages/oxipng",
+  "author": {
+    "name": "Jamie Sinclair",
+    "email": "jamsinclairnz+npm@gmail.com"
+  },
+  "keywords": [
+    "image",
+    "optimisation",
+    "optimization",
+    "squoosh",
+    "wasm",
+    "webassembly",
+    "png",
+    "oxipng"
+  ],
+  "license": "Apache-2.0",
+  "scripts": {
+    "clean": "rm -rf dist",
+    "build": "npm run clean && tsc && cp -r codec package.json README.md CHANGELOG.md .npmignore ../../LICENSE dist && rm -rf dist/codec/target",
+    "prepublishOnly": "[[ \"$PWD\" == *'/dist' ]] && exit 0 || (echo 'Please run npm publish from the dist directory' && exit 1)"
+  },
+  "dependencies": {
+    "wasm-feature-detect": "^1.2.11"
+  },
+  "devDependencies": {
+    "typescript": "^4.4.4"
+  },
+  "type": "module",
+  "sideEffects": false
+}

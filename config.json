@@ -1,0 +1,27 @@
+{
+  "apiToggles": {
+    "textCompletion": true,
+    "chatCompletion": true,
+    "novelAI": true,
+    "aiHorde": true,
+    "kobold": false
+  },
+  "_commentExtensionToastNotifications": "extensionToastNotifications 控制扩展安装、更新等操作的 Toast 提示（true 显示，false 关闭）。",
+  "extensionToastNotifications": true,
+  "_commentApiToggleLogging": "apiToggleLogging 控制服务器在控制台输出被禁用接口的日志（true 输出，false 关闭）。",
+  "apiToggleLogging": false,
+  "_commentDebugLogging": "debugLogging 控制前端调试信息输出：worldInfo（世界书）、events（事件总线）、metadata（元数据保存）、tokenCache（词元缓存）、presets（预设管理器）、context（上下文/提示设置）、movingUI（移动 UI 状态）、extensions（扩展初始化）、window（窗口尺寸/缩放）、renderQueue（渲染队列统计）、generation（生成流程日志）。",
+  "debugLogging": {
+    "worldInfo": false,
+    "events": false,
+    "metadata": false,
+    "tokenCache": false,
+    "presets": false,
+    "context": false,
+    "movingUI": false,
+    "extensions": false,
+    "window": false,
+    "renderQueue": false,
+    "generation": false
+  }
+}

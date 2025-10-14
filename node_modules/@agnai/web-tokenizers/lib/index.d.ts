@@ -1,0 +1,7 @@
+import { Tokenizer } from "./tokenizers";
+export { Tokenizer };
+declare const _default: {
+    Tokenizer: typeof Tokenizer;
+};
+export default _default;
+//# sourceMappingURL=index.d.ts.map

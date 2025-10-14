@@ -1,0 +1,60 @@
+{
+  "name": "ip-matching",
+  "version": "2.1.2",
+  "type": "commonjs",
+  "main": "lib/index.js",
+  "types": "api/index.d.ts",
+  "description": "Utilities for IPv4/IPv6 ranges/subnets/masks parsing/matching, string representations, ...",
+  "dependencies": {},
+  "devDependencies": {
+    "@microsoft/api-extractor": "^7.18.1",
+    "@types/jest": "^26.0.20",
+    "@types/node": "^10",
+    "@typescript-eslint/eslint-plugin": "^4.28.2",
+    "@typescript-eslint/parser": "^4.28.2",
+    "eslint": "^7.30.0",
+    "jest": "^26.6.3",
+    "nodemon": "^2.0.6",
+    "rimraf": "^3.0.2",
+    "source-map-support": "^0.5.19",
+    "ts-jest": "^26.5.0",
+    "typescript": "^4.3.5"
+  },
+  "scripts": {
+    "compile": "tsc",
+    "compile:watch": "tsc -w",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "api": "api-extractor run",
+    "api:local": "api-extractor run -l",
+    "api:watch": "nodemon -w api-extractor.json -w lib -e d.ts --exec yarn api:local",
+    "lint": "eslint . --ext .ts --format stylish",
+    "lint:watch": "nodemon -w .eslintignore -w .eslintrc.js -w src -e ts --exec yarn eslint . --ext .ts --format stylish",
+    "clean": "rimraf lib",
+    "prepack": "yarn clean && yarn compile && yarn lint && yarn test && yarn api"
+  },
+  "author": {
+    "name": "Kelvin Schoofs",
+    "url": "https://github.com/SchoofsKelvin",
+    "email": "schoofs.kelvin@gmail.com"
+  },
+  "homepage": "https://www.npmjs.com/package/ip-matching",
+  "bugs": "https://github.com/SchoofsKelvin/ip-matching/issues",
+  "repository": "SchoofsKelvin/ip-matching",
+  "license": "LGPL-3.0-only",
+  "keywords": [
+    "match",
+    "IP",
+    "address",
+    "IPv4",
+    "IPv6",
+    "CIDR",
+    "notation",
+    "range",
+    "subnet",
+    "subnetwork",
+    "net",
+    "network",
+    "mask"
+  ]
+}

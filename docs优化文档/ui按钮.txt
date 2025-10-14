@@ -1,0 +1,13 @@
+ 定位结果
+                                                                                                                                                                                                                  
+  - public/index.html:4804 的 <div name="themeToggles"> 段中包含 id="reduced_motion" 的 <label>，同组还有 fast_ui_mode、noShadowsmode 等主题相关开关，保持这一分组即可让新增按钮共享布局样式。                    
+                                                                                                                                                                                                                  
+  初始化与事件                                                                                                                                                                                                    
+                                                                                                                                                                                                                  
+  - public/scripts/power-user.js:328 在 power_user 默认配置里声明 reduced_motion: false，所有 UI 复选框都以此对象为权威状态源。                                                                                   
+  - public/scripts/power-user.js:498 的 switchReducedMotion() 将 power_user.reduced_motion 同步到 DOM：设置 jQuery.fx.off、调用 setAnimationDuration、更新 #reduced_motion 复选框及 body 的 reduced-motion 类。   
+  - public/scripts/power-user.js:1707（位于 loadSettings 初始化流程中）在界面加载时执行 $('#reduced_motion').prop('checked', power_user.reduced_motion); 并调用 switchReducedMotion();，确保页面初始状态与存储    
+    一致。                                                                                                                                                                                                        
+  - public/scripts/power-user.js:4051 监听 #reduced_motion 的 input 事件：写回 power_user.reduced_motion，调用 switchReducedMotion() 和 saveSettingsDebounced()，从而持久化设置并立即刷新效果。                   
+                                                                                                                                                                                                                  
+  照此路径新增按钮时，只需仿照上述三个触点（默认值、初始化同步、事件监听）即可继承相同的加载与保存机制。                    

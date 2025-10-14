@@ -1,0 +1,16 @@
+{
+  "include": [
+    "src"
+  ],
+  "compilerOptions": {
+    "target": "es2016",
+    "module": "commonjs",
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "outDir": "lib",
+    "rootDir": "src",
+    "strict": true,
+    "moduleResolution": "node"
+  }
+}

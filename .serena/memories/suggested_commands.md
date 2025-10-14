@@ -1,0 +1,12 @@
+# 常用命令
+- 初始化依赖：`npm install`
+- 启动服务器（常规）：`npm run start`（默认读取 `config.yaml`，监听 8000 端口）
+- 调试模式：`npm run debug`（附带 Node Inspector），或 `npm run start:no-csrf` 在排查 CSRF 问题时使用
+- 运行 Electron 壳：`npm run start:electron`
+- 禁用全局路径限制启动：`npm run start:global`
+- 插件管理：`node plugins update` / `node plugins install`
+- 代码检查：`npm run lint`，自动修复：`npm run lint:fix`
+- 前端构建：随服务器启动通过 Webpack 中间件自动编译，必要时可执行 `node ./src/middleware/webpack-serve.js` 中的编译逻辑（通常无需手动）
+- 集成测试（独立测试包）：`cd tests && npm install && npm test`
+- Docker 部署：`docker-compose up -d`（需先复制 `config.yaml` 与数据卷）
+- Windows 常用工具：使用 PowerShell `Get-ChildItem`、`Set-Location`、`Get-Content`，或通过 Codex CLI 的 Desktop Commander 工具执行

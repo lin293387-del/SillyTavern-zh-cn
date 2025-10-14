@@ -1,0 +1,1 @@
+{"version":3,"file":"GPT3Tokenizer.d.ts","sourceRoot":"","sources":["../src/GPT3Tokenizer.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,SAAS,EAAE,MAAM,SAAS,CAAC;AAGpC;;GAEG;AACH,qBAAa,aAAc,YAAW,SAAS;IACpC,MAAM,CAAC,MAAM,EAAE,MAAM,EAAE,GAAG,MAAM;IAIhC,MAAM,CAAC,IAAI,EAAE,MAAM,GAAG,MAAM,EAAE;CAGxC"}

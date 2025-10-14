@@ -1,0 +1,14 @@
+/**
+ * @private
+ */
+export declare class Colorize {
+    static replaceLine(text: string): string;
+    static error(error: Error | string): string;
+    static output(output: object | string, quote?: string, units?: string): string;
+    static progress(message: string): string;
+    static success(message: string): string;
+    static title(title: string): string;
+    static value(field: string, value: any, units?: string): string;
+    static warning(warning: string): string;
+}
+//# sourceMappingURL=Colorize.d.ts.map
