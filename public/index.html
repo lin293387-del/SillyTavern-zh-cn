@@ -18,11 +18,16 @@
         }
     </style>
     <link rel="manifest" crossorigin="use-credentials" href="manifest.json">
-    <link href="webfonts/NotoSans/stylesheet.css" rel="stylesheet">
-    <link href="webfonts/NotoSansMono/stylesheet.css" rel="stylesheet">
-    <link href="css/fontawesome.min.css" rel="stylesheet">
-    <link href="css/solid.min.css" rel="stylesheet">
-    <link href="css/brands.min.css" rel="stylesheet">
+    <link href="webfonts/NotoSans/stylesheet.css" rel="preload" as="style" onload="this.rel='stylesheet';this.removeAttribute('onload');">
+    <noscript><link href="webfonts/NotoSans/stylesheet.css" rel="stylesheet"></noscript>
+    <link href="webfonts/NotoSansMono/stylesheet.css" rel="preload" as="style" onload="this.rel='stylesheet';this.removeAttribute('onload');">
+    <noscript><link href="webfonts/NotoSansMono/stylesheet.css" rel="stylesheet"></noscript>
+    <link href="css/fontawesome.min.css" rel="preload" as="style" onload="this.rel='stylesheet';this.removeAttribute('onload');">
+    <noscript><link href="css/fontawesome.min.css" rel="stylesheet"></noscript>
+    <link href="css/solid.min.css" rel="preload" as="style" onload="this.rel='stylesheet';this.removeAttribute('onload');">
+    <noscript><link href="css/solid.min.css" rel="stylesheet"></noscript>
+    <link href="css/brands.min.css" rel="preload" as="style" onload="this.rel='stylesheet';this.removeAttribute('onload');">
+    <noscript><link href="css/brands.min.css" rel="stylesheet"></noscript>
     <link href="css/jquery-ui.min.css" rel="stylesheet">
     <link href="css/bright.min.css" rel="stylesheet">
     <link href="css/cropper.min.css" rel="stylesheet">

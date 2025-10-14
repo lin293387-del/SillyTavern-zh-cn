@@ -22,6 +22,7 @@ import {
     doNavbarIconClick,
     getCurrentChatId,
     chat,
+    scheduleLowPriorityTask,
 } from '../script.js';
 
 import {
@@ -1019,7 +1020,7 @@ export function initRossMods() {
     }
 
     sendTextArea.addEventListener('input', () => {
-        saveUserInputDebounced();
+        scheduleLowPriorityTask(() => saveUserInputDebounced(), { priority: 'background' });
 
         if (cssAutofit) {
             // Unset modifications made with a manual resize
@@ -1062,7 +1063,7 @@ export function initRossMods() {
                 SwipeButR.trigger('click');
             }
         }
-    });
+    }, { passive: true });
     document.addEventListener('swiped-right', function (e) {
         if (power_user.gestures === false) {
             return;
@@ -1086,7 +1087,7 @@ export function initRossMods() {
                 SwipeButL.trigger('click');
             }
         }
-    });
+    }, { passive: true });
 
 
     function isInputElementInFocus() {

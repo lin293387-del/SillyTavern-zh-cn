@@ -435,6 +435,7 @@ const token = prompts.registerModule({
 ## 20. 声明文件引用
 
 - 在 SillyTavern 前端中，声明文件默认已包含于仓库，可直接使用 VS Code 等编辑器获取智能提示。
+- 为 `public/scripts/chat/` 子模块补齐细粒度声明（如 `chat-renderer.d.ts`、`message-dom-map.d.ts`、`chat-events.d.ts`、`message-lifecycle.d.ts`、`message-render-cache.d.ts`、`render-task-queue.d.ts`、`offscreen-manager.d.ts`、`render-pipeline-config.d.ts`），扩展可直接引用这些类型了解消息渲染、虚拟化、调度等内部结构。
 - 若在独立扩展项目中使用，可将该文件复制到项目根目录，并通过以下方式引用：
   - 在 JS/TS 文件顶部添加 `/// <reference path="./sillytavern-extensions.d.ts" />`
   - 或在 `tsconfig.json` 中通过 `typeRoots` / `include` 指向该声明。

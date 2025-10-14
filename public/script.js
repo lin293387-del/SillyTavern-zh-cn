@@ -389,7 +389,90 @@ export {
     getSystemMessageByType,
     event_types,
     eventSource,
+    addManagedEventListener,
+    scheduleLowPriorityTask,
 };
+
+const DEFAULT_PASSIVE_EVENT_TYPES = new Set([
+    'wheel',
+    'mousewheel',
+    'touchstart',
+    'touchmove',
+    'touchend',
+    'touchcancel',
+    'pointerdown',
+    'pointermove',
+    'pointerup',
+    'pointercancel',
+    'scroll',
+]);
+
+function normalizeEventListenerOptions(eventType, options) {
+    const shouldBePassive = DEFAULT_PASSIVE_EVENT_TYPES.has(eventType);
+
+    if (options === undefined || options === null) {
+        return shouldBePassive ? { passive: true } : undefined;
+    }
+
+    if (typeof options === 'boolean') {
+        if (!shouldBePassive) {
+            return options;
+        }
+        return { capture: options, passive: true };
+    }
+
+    if (typeof options === 'object') {
+        if (shouldBePassive && !Object.prototype.hasOwnProperty.call(options, 'passive')) {
+            return { ...options, passive: true };
+        }
+        return options;
+    }
+
+    return options;
+}
+
+function addManagedEventListener(target, eventType, listener, options) {
+    if (!target || typeof target.addEventListener !== 'function') {
+        return () => {};
+    }
+    const normalized = normalizeEventListenerOptions(eventType, options);
+    target.addEventListener(eventType, listener, normalized);
+    return () => target.removeEventListener(eventType, listener, normalized);
+}
+
+function scheduleLowPriorityTask(callback, { priority = 'background', delay = 0 } = {}) {
+    if (typeof scheduler !== 'undefined' && typeof scheduler?.postTask === 'function') {
+        scheduler.postTask(() => {
+            try {
+                callback();
+            } catch (error) {
+                console.error('低优先级任务执行失败', error);
+            }
+        }, { priority, delay }).catch((error) => {
+            console.error('低优先级任务调度失败', error);
+        });
+        return;
+    }
+
+    if (typeof requestIdleCallback === 'function') {
+        requestIdleCallback(() => {
+            try {
+                callback();
+            } catch (error) {
+                console.error('requestIdleCallback 任务执行失败', error);
+            }
+        }, { timeout: typeof delay === 'number' ? delay : undefined });
+        return;
+    }
+
+    setTimeout(() => {
+        try {
+            callback();
+        } catch (error) {
+            console.error('setTimeout 低优先级任务执行失败', error);
+        }
+    }, Math.max(0, delay));
+}
 
 /**
  * Wait for page to load before continuing the app initialization.
@@ -398,7 +481,7 @@ await new Promise((resolve) => {
     if (document.readyState === 'complete') {
         resolve();
     } else {
-        window.addEventListener('load', resolve);
+        window.addEventListener('load', resolve, { once: true });
     }
 });
 
@@ -1557,7 +1640,7 @@ function finalizeChatRender({ shouldScroll = true } = {}) {
     });
 }
 
-window.addEventListener('virtualization-toggle', (event) => {
+addManagedEventListener(window, 'virtualization-toggle', (event) => {
     const enabled = event?.detail?.enabled ?? isVirtualizationEnabled();
     flushRenderTasks();
     const tasks = [];
@@ -1692,6 +1775,10 @@ const RENDER_SPLIT_THRESHOLD = 12000;
 const BODY_POINTER_THROTTLE_MS = 40;
 let lastBodyPointerTimestamp = 0;
 const dynamicStyleRegistry = new Map();
+const DYNAMIC_STYLE_ANCHOR_SELECTOR = 'meta[data-st-dynamic-style-anchor="true"]';
+const EXTERNAL_STYLE_ANCHOR_SELECTOR = 'meta[data-st-external-style-anchor="true"]';
+let dynamicStyleAnchor = null;
+let externalStyleAnchor = null;
 const LARGE_TEMPLATE_THRESHOLD = 50000;
 const LARGE_TEMPLATE_MAX_RETRIES = 3;
 const LARGE_TEMPLATE_RETRY_DELAY_MS = 48;
@@ -1705,6 +1792,70 @@ const externalImportRegistry = new Set();
 let externalImportScheduled = false;
 
 const renderPipelineStages = [];
+
+const SUPPORTS_PRELOAD = (() => {
+    try {
+        if (typeof document === 'undefined') {
+            return false;
+        }
+        const testLink = document.createElement('link');
+        return !!testLink.relList && typeof testLink.relList.supports === 'function'
+            && testLink.relList.supports('preload');
+    } catch {
+        return false;
+    }
+})();
+
+function ensureDynamicStyleAnchor() {
+    if (typeof document === 'undefined' || !document.head) {
+        return null;
+    }
+    if (dynamicStyleAnchor?.isConnected) {
+        return dynamicStyleAnchor;
+    }
+    dynamicStyleAnchor = document.head.querySelector(DYNAMIC_STYLE_ANCHOR_SELECTOR) ?? null;
+    if (!dynamicStyleAnchor) {
+        dynamicStyleAnchor = document.createElement('meta');
+        dynamicStyleAnchor.setAttribute('data-st-dynamic-style-anchor', 'true');
+        dynamicStyleAnchor.setAttribute('name', 'st-dynamic-style-anchor');
+        dynamicStyleAnchor.setAttribute('content', '');
+        document.head.appendChild(dynamicStyleAnchor);
+    }
+    return dynamicStyleAnchor;
+}
+
+function ensureExternalStyleAnchor() {
+    if (typeof document === 'undefined' || !document.head) {
+        return null;
+    }
+    if (externalStyleAnchor?.isConnected) {
+        return externalStyleAnchor;
+    }
+    externalStyleAnchor = document.head.querySelector(EXTERNAL_STYLE_ANCHOR_SELECTOR) ?? null;
+    if (!externalStyleAnchor) {
+        externalStyleAnchor = document.createElement('meta');
+        externalStyleAnchor.setAttribute('data-st-external-style-anchor', 'true');
+        externalStyleAnchor.setAttribute('name', 'st-external-style-anchor');
+        externalStyleAnchor.setAttribute('content', '');
+        document.head.appendChild(externalStyleAnchor);
+    }
+    return externalStyleAnchor;
+}
+
+function insertBeforeAnchor(node, anchor) {
+    if (!node) {
+        return;
+    }
+    const targetAnchor = anchor?.isConnected ? anchor : null;
+    if (targetAnchor && targetAnchor.parentNode) {
+        targetAnchor.parentNode.insertBefore(node, targetAnchor);
+        return;
+    }
+    if (typeof document !== 'undefined' && document.head) {
+        document.head.appendChild(node);
+    }
+}
+
 
 if (typeof window !== 'undefined') {
     window.__largeTemplateDebug__ = window.__largeTemplateDebug__ || {};
@@ -1949,7 +2100,7 @@ function deleteByPath(target, path) {
 }
 
 export function registerDynamicStyle(hash, cssText) {
-    if (!hash || !cssText) {
+    if (!hash || !cssText || typeof document === 'undefined') {
         return;
     }
 
@@ -1958,7 +2109,7 @@ export function registerDynamicStyle(hash, cssText) {
         const styleElement = document.createElement('style');
         styleElement.dataset.chatStyleRef = hash;
         styleElement.textContent = cssText;
-        document.head.appendChild(styleElement);
+        insertBeforeAnchor(styleElement, ensureDynamicStyleAnchor());
         entry = { count: 0, element: styleElement };
         dynamicStyleRegistry.set(hash, entry);
     }
@@ -2261,6 +2412,48 @@ function hydrateLargeTemplates(messageElement) {
     });
 }
 
+const PRELOAD_PROMOTION_TIMEOUT_MS = 4000;
+
+function resolveExternalResourceHint(url) {
+    const normalized = (url || '').split('?')[0].toLowerCase();
+    if (normalized.endsWith('.woff2')) {
+        return { rel: 'preload', as: 'font', type: 'font/woff2', crossOrigin: 'anonymous', applyStylesheet: false };
+    }
+    if (normalized.endsWith('.woff')) {
+        return { rel: 'preload', as: 'font', type: 'font/woff', crossOrigin: 'anonymous', applyStylesheet: false };
+    }
+    if (normalized.endsWith('.ttf')) {
+        return { rel: 'preload', as: 'font', type: 'font/ttf', crossOrigin: 'anonymous', applyStylesheet: false };
+    }
+    if (normalized.endsWith('.otf')) {
+        return { rel: 'preload', as: 'font', type: 'font/otf', crossOrigin: 'anonymous', applyStylesheet: false };
+    }
+    if (normalized.endsWith('.css')) {
+        return { rel: 'preload', as: 'style', applyStylesheet: true };
+    }
+    return { rel: 'preload', as: 'style', applyStylesheet: true };
+}
+
+function promotePreloadedStylesheet(link) {
+    if (!link || link.rel === 'stylesheet') {
+        return;
+    }
+    link.rel = 'stylesheet';
+    link.removeAttribute('as');
+    link.removeAttribute('onload');
+}
+
+function scheduleStylesheetPromotion(link, delay = PRELOAD_PROMOTION_TIMEOUT_MS) {
+    if (!link) {
+        return;
+    }
+    setTimeout(() => {
+        if (link.rel === 'preload') {
+            promotePreloadedStylesheet(link);
+        }
+    }, delay);
+}
+
 function queueExternalImports(urls, priority = EXTERNAL_IMPORT_DEFAULT_PRIORITY) {
     let added = false;
     const normalizedPriority = Number.isFinite(Number(priority))
@@ -2318,6 +2511,7 @@ function flushExternalImports() {
             return a.priority - b.priority;
         });
 
+    const anchor = ensureExternalStyleAnchor();
     entries.forEach(({ url }) => {
         if (externalImportRegistry.has(url)) {
             externalImportQueue.delete(url);
@@ -2326,11 +2520,35 @@ function flushExternalImports() {
 
         externalImportRegistry.add(url);
         const link = document.createElement('link');
-        link.rel = 'stylesheet';
+        const hint = resolveExternalResourceHint(url);
+        const shouldPreload = SUPPORTS_PRELOAD && hint.rel === 'preload';
+
         link.href = url;
-        link.referrerPolicy = 'no-referrer';
         link.dataset.extStyleImport = hashString(url);
-        document.head.appendChild(link);
+        link.referrerPolicy = 'no-referrer';
+        if (hint.type) {
+            link.type = hint.type;
+        }
+        if (hint.crossOrigin) {
+            link.crossOrigin = hint.crossOrigin;
+        }
+
+        if (hint.applyStylesheet && !shouldPreload) {
+            link.rel = 'stylesheet';
+        } else {
+            link.rel = hint.rel;
+            if (hint.as) {
+                link.as = hint.as;
+            }
+        }
+
+        if (hint.applyStylesheet && shouldPreload) {
+            link.onload = () => promotePreloadedStylesheet(link);
+            link.onerror = () => promotePreloadedStylesheet(link);
+            scheduleStylesheetPromotion(link);
+        }
+
+        insertBeforeAnchor(link, anchor);
     });
 
     externalImportQueue.clear();
@@ -2617,6 +2835,38 @@ if (!globalThis.__ST_DEBUG_FLAGS__) {
     globalThis.__ST_DEBUG_FLAGS__ = { ...debugLoggingFlags };
 } else {
     applyDebugLoggingFlags(globalThis.__ST_DEBUG_FLAGS__);
+}
+
+function cloneRequest(request, overrides = {}) {
+    const headers = overrides.headers ? new Headers(overrides.headers) : new Headers(request.headers ?? {});
+
+    const init = {
+        method: overrides.method ?? request.method,
+        headers,
+        mode: overrides.mode ?? request.mode,
+        credentials: overrides.credentials ?? request.credentials,
+        cache: overrides.cache ?? request.cache,
+        redirect: overrides.redirect ?? request.redirect,
+        referrer: overrides.referrer ?? request.referrer,
+        referrerPolicy: overrides.referrerPolicy ?? request.referrerPolicy,
+        integrity: overrides.integrity ?? request.integrity,
+        keepalive: overrides.keepalive ?? request.keepalive,
+        signal: overrides.signal ?? request.signal,
+    };
+
+    if (overrides.priority !== undefined) {
+        init.priority = overrides.priority;
+    } else if ('priority' in request) {
+        init.priority = request.priority;
+    }
+
+    if (overrides.duplex !== undefined) {
+        init.duplex = overrides.duplex;
+    } else if ('duplex' in request) {
+        init.duplex = request.duplex;
+    }
+
+    return new Request(request, init);
 }
 
 function shouldSuppressConsoleMessage(method, args) {
@@ -2927,7 +3177,12 @@ export function listBackendApis() {
 }
 
 window.fetch = async function patchedFetch(input, init) {
-    let request = input instanceof Request ? input : new Request(input, init);
+    const baseRequest = input instanceof Request ? input : new Request(input, init);
+    const mergedInit = input instanceof Request && init ? { ...init } : undefined;
+    let request = input instanceof Request && mergedInit
+        ? cloneRequest(baseRequest, mergedInit)
+        : (input instanceof Request ? baseRequest.clone() : baseRequest);
+
     const method = request.method?.toUpperCase?.() ?? 'GET';
     const requiresCsrf = method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS';
     let requestOrigin;
@@ -2960,7 +3215,7 @@ window.fetch = async function patchedFetch(input, init) {
         }
     }
 
-if (requiresCsrf && requestOrigin === window.location.origin) {
+    if (requiresCsrf && requestOrigin === window.location.origin) {
         try {
             await ensureCsrfToken();
         } catch (error) {
@@ -2973,7 +3228,7 @@ if (requiresCsrf && requestOrigin === window.location.origin) {
             headers.set('X-CSRF-Token', token);
         }
 
-        request = new Request(request, { headers });
+        request = cloneRequest(request, { headers });
     }
 
     return originalFetch(request);
@@ -4893,7 +5148,7 @@ export function addCopyToCodeBlocks(messageElement) {
         copyButton.addEventListener('click', function (e) {
             e.stopPropagation();
         });
-        copyButton.addEventListener('pointerup', async function () {
+        addManagedEventListener(copyButton, 'pointerup', async function () {
             const text = codeBlocks.get(i).innerText;
             await copyText(text);
             toastr.info(t`已复制！`, '', { timeOut: 2000 });
@@ -14856,7 +15111,7 @@ jQuery(async function () {
         }
     };
     const chatScrollHandler = throttle(chatScrollHandlerCore, 120);
-    chatElementScroll.addEventListener('scroll', chatScrollHandler, { passive: true });
+    addManagedEventListener(chatElementScroll, 'scroll', chatScrollHandler);
 
     $chat.on('click', '.mes', function () {
         //when a 'delete message' parent div is clicked
@@ -15947,7 +16202,7 @@ jQuery(async function () {
 
     $('.drawer-toggle').on('click', doNavbarIconClick);
 
-    document.body.addEventListener('pointerdown', async (event) => {
+    const handleBodyPointerDown = async (event) => {
         const now = performance.now();
         if (now - lastBodyPointerTimestamp < BODY_POINTER_THROTTLE_MS) {
             return;
@@ -15961,7 +16216,7 @@ jQuery(async function () {
             && clickTarget.closest('#export_format_popup').length == 0) {
             $('#export_format_popup').hide();
             isExportPopupOpen = false;
-            exportPopper.update();
+            scheduleLowPriorityTask(() => exportPopper.update(), { priority: 'user-visible' });
         }
 
         const forbiddenTargets = [
@@ -15992,7 +16247,8 @@ jQuery(async function () {
                 $openDrawers.toggleClass('closedDrawer openDrawer');
             }
         }
-    }, { passive: true });
+    };
+    addManagedEventListener(document.body, 'pointerdown', handleBodyPointerDown);
 
     const handleInlineDrawerToggle = async (toggleElement, eventTarget) => {
         if (eventTarget.classList?.contains('text_pole')) {
@@ -16024,15 +16280,15 @@ jQuery(async function () {
 
     const handleInlineDrawerMaximize = (buttonElement) => {
         const $button = $(buttonElement);
-        const icon = $button.find('.inline-drawer-icon, .floating_panel_maximize');
-        icon.toggleClass('fa-window-maximize fa-window-restore');
-        const drawerContent = $button.closest('.drawer-content');
-        drawerContent.toggleClass('maximized');
-        const drawerId = drawerContent.attr('id');
-        resetMovableStyles(drawerId);
-    };
+    const icon = $button.find('.inline-drawer-icon, .floating_panel_maximize');
+    icon.toggleClass('fa-window-maximize fa-window-restore');
+    const drawerContent = $button.closest('.drawer-content');
+    drawerContent.toggleClass('maximized');
+    const drawerId = drawerContent.attr('id');
+    scheduleLowPriorityTask(() => resetMovableStyles(drawerId), { priority: 'user-visible' });
+};
 
-    document.body.addEventListener('click', async (event) => {
+    const handleBodyClick = async (event) => {
         const target = event.target;
         if (!(target instanceof Element)) {
             return;
@@ -16053,11 +16309,12 @@ jQuery(async function () {
         if (maximize) {
             handleInlineDrawerMaximize(maximize);
         }
-    }, { passive: true });
+    };
+    addManagedEventListener(document.body, 'click', handleBodyClick);
 
     const sendFormShell = document.getElementById('form_sheld');
     if (sendFormShell) {
-        sendFormShell.addEventListener('click', (event) => {
+        addManagedEventListener(sendFormShell, 'click', (event) => {
             const target = event.target instanceof Element ? event.target.closest('.stscript_btn') : null;
             if (!target) {
                 return;
@@ -16071,12 +16328,12 @@ jQuery(async function () {
             if (target.classList.contains('stscript_stop')) {
                 stopScriptExecution();
             }
-        }, { passive: true });
+        });
     }
 
     const mesStopButton = document.getElementById('mes_stop');
     if (mesStopButton) {
-        mesStopButton.addEventListener('click', () => stopGeneration(), { passive: true });
+        addManagedEventListener(mesStopButton, 'click', () => stopGeneration());
     }
 
     $chat.on('click', '.mes .avatar', function () {
@@ -16452,7 +16709,7 @@ jQuery(async function () {
     // Added here to prevent execution before script.js is loaded and get rid of quirky timeouts
     await firstLoadInit();
 
-    window.addEventListener('beforeunload', (e) => {
+    addManagedEventListener(window, 'beforeunload', (e) => {
         if (isChatSaving) {
             e.preventDefault();
             e.returnValue = true;
