@@ -13,6 +13,8 @@ import { Popup } from './popup.js';
 import { t } from './i18n.js';
 import { isMobile } from './RossAscends-mods.js';
 
+const RESERVED_TOKEN_KEYS = new Set(['start_chat', 'prompt', 'bias', 'nudge', 'jailbreak', 'impersonate', 'examples', 'conversation']);
+
 function debouncePromise(func, delay) {
     let timeoutId;
 
@@ -439,16 +441,41 @@ class PromptManager {
 
         this.sanitizeServiceSettings();
 
+        // 降低开关操作的持久化开销，缓解同步阻塞
+        const saveSettingsDebounced = debouncePromise(() => this.saveServiceSettings(), 200);
+        this.recalculateTokensDebounced = debouncePromise(() => this.recalculatePromptTokens(), 150);
+        this.recalculateTokensTask = null;
+
         // Enable and disable prompts
         this.handleToggle = (event) => {
-            const promptID = event.target.closest('.' + this.configuration.prefix + 'prompt_manager_prompt').dataset.pmIdentifier;
+            const toggleElement = /** @type {HTMLElement|null} */ (
+                event.currentTarget instanceof HTMLElement
+                    ? event.currentTarget
+                    : (event.target instanceof HTMLElement ? event.target : null)
+            );
+            const promptElement = toggleElement?.closest('.' + this.configuration.prefix + 'prompt_manager_prompt');
+            const promptID = promptElement?.dataset.pmIdentifier;
             const promptOrderEntry = this.getPromptOrderEntry(this.activeCharacter, promptID);
             const counts = this.tokenHandler.getCounts();
 
+            if (!promptElement || !promptID || !promptOrderEntry) {
+                return;
+            }
+
             counts[promptID] = null;
             promptOrderEntry.enabled = !promptOrderEntry.enabled;
-            this.render();
-            this.saveServiceSettings();
+
+            if (toggleElement) {
+                toggleElement.classList.toggle('fa-toggle-on', promptOrderEntry.enabled);
+                toggleElement.classList.toggle('fa-toggle-off', !promptOrderEntry.enabled);
+            }
+
+            const disabledClass = this.configuration.prefix + 'prompt_manager_prompt_disabled';
+            promptElement.classList.toggle(disabledClass, !promptOrderEntry.enabled);
+
+            this.renderDebounced();
+            saveSettingsDebounced();
+            this.recalculateTokensDebounced();
         };
 
         // Open edit form and load selected prompt
@@ -490,6 +517,7 @@ class PromptManager {
             this.clearEditForm();
             this.render();
             this.saveServiceSettings();
+            this.recalculateTokensDebounced();
         };
 
         // Save prompt edit form to settings and close form.
@@ -515,6 +543,7 @@ class PromptManager {
             this.clearEditForm();
             this.render();
             this.saveServiceSettings();
+            this.recalculateTokensDebounced();
         };
 
         // Reset prompt should it be a system prompt
@@ -583,6 +612,8 @@ class PromptManager {
             if (!this.systemPrompts.includes(promptId)) {
                 injectionPositionField.removeAttribute('disabled');
             }
+
+            this.recalculateTokensDebounced();
         };
 
         // Append prompt to selected character
@@ -595,6 +626,7 @@ class PromptManager {
                 this.appendPrompt(prompt, this.activeCharacter);
                 this.render();
                 this.saveServiceSettings();
+                this.recalculateTokensDebounced();
             }
         };
 
@@ -616,6 +648,7 @@ class PromptManager {
                     this.clearEditForm();
                     this.render();
                     this.saveServiceSettings();
+                    this.recalculateTokensDebounced();
                 }
             });
         };
@@ -723,6 +756,7 @@ class PromptManager {
 
                     this.render();
                     this.saveServiceSettings();
+                    this.recalculateTokensDebounced();
                 });
         };
 
@@ -743,6 +777,7 @@ class PromptManager {
 
                 this.log('Saved prompt: ' + promptId);
                 this.saveServiceSettings().then(() => this.render());
+                this.recalculateTokensDebounced();
             };
 
             const mainPrompt = this.getPromptById('main');
@@ -1584,21 +1619,152 @@ class PromptManager {
         this.overriddenPrompts = chatCompletion.getOverriddenPrompts();
     }
 
-    /**
-     * Populates the token handler
-     *
-     * @param {import('./openai.js').MessageCollection} messages
-     */
     populateTokenCounts(messages) {
         this.tokenHandler.resetCounts();
         const counts = this.tokenHandler.getCounts();
-        messages.getCollection().forEach(message => {
+        messages.getCollection().forEach((message) => {
             counts[message.identifier] = message.getTokens();
         });
 
         this.tokenUsage = this.tokenHandler.getTotal();
+        this.updatePromptTokenDisplay();
+    }
 
-        this.log('Updated token usage with ' + this.tokenUsage);
+    async recalculatePromptTokens() {
+        if (main_api !== 'openai') {
+            return;
+        }
+
+        if (this.recalculateTokensTask) {
+            return this.recalculateTokensTask;
+        }
+
+        this.recalculateTokensTask = (async () => {
+            const counts = this.tokenHandler.getCounts();
+            const promptOrder = this.getPromptOrderForCharacter(this.activeCharacter) ?? [];
+            const identifiers = promptOrder.map((entry) => entry.identifier).filter(Boolean);
+            const identifierSet = new Set(identifiers);
+            const tasks = [];
+
+            for (const identifier of identifiers) {
+                const prompt = this.getPromptById(identifier);
+                const promptOrderEntry = this.getPromptOrderEntry(this.activeCharacter, identifier);
+
+                if (!prompt || !promptOrderEntry?.enabled) {
+                    counts[identifier] = 0;
+                    continue;
+                }
+
+                const content = String(prompt.content ?? '').trim();
+                counts[identifier] = 0;
+
+                if (!content.length) {
+                    continue;
+                }
+
+                const message = { role: prompt.role ?? 'system', content };
+
+                tasks.push(
+                    this.tokenHandler.countAsync(message, false, identifier).catch((error) => {
+                        console.debug(`Prompt token count failed for ${identifier}`, error);
+                        counts[identifier] = counts[identifier] ?? 0;
+                    })
+                );
+            }
+
+            await Promise.allSettled(tasks);
+
+            for (const key of Object.keys(counts)) {
+                if (!RESERVED_TOKEN_KEYS.has(key) && !identifierSet.has(key)) {
+                    counts[key] = 0;
+                }
+            }
+
+            this.tokenUsage = this.tokenHandler.getTotal();
+            this.updatePromptTokenDisplay();
+        })().catch((error) => {
+            console.error('Failed to recalculate prompt tokens', error);
+        }).finally(() => {
+            this.recalculateTokensTask = null;
+        });
+
+        return this.recalculateTokensTask;
+    }
+
+    getPromptTokenWarning(prompt, tokens) {
+        let warningClass = '';
+        let warningTitle = '';
+
+        if (!prompt) {
+            return { warningClass, warningTitle };
+        }
+
+        const tokenBudget = this.serviceSettings.openai_max_context - this.serviceSettings.openai_max_tokens;
+        if (this.tokenUsage > tokenBudget * 0.8 && prompt.identifier === 'chatHistory') {
+            const warningThreshold = this.configuration.warningTokenThreshold;
+            const dangerThreshold = this.configuration.dangerTokenThreshold;
+
+            if (tokens <= dangerThreshold) {
+                warningClass = 'fa-solid tooltip fa-triangle-exclamation text_danger';
+                warningTitle = t`Very little of your chat history is being sent, consider deactivating some other prompts.`;
+            } else if (tokens <= warningThreshold) {
+                warningClass = 'fa-solid tooltip fa-triangle-exclamation text_warning';
+                warningTitle = t`Only a few messages worth chat history are being sent.`;
+            }
+        }
+
+        return { warningClass, warningTitle };
+    }
+
+    updatePromptTokenDisplay() {
+        const counts = this.tokenHandler.getCounts();
+        const totalActiveTokens = this.tokenUsage;
+
+        if (this.containerElement) {
+            const totalSpan = this.containerElement.querySelector('[data-total-token-count]');
+            if (totalSpan instanceof HTMLElement) {
+                totalSpan.textContent = String(totalActiveTokens);
+            }
+        }
+
+        if (!this.listElement) {
+            return;
+        }
+
+        const prefix = this.configuration.prefix;
+        this.listElement.querySelectorAll(`.${prefix}prompt_manager_prompt`).forEach((element) => {
+            if (!(element instanceof HTMLElement)) {
+                return;
+            }
+            const identifier = element.dataset.pmIdentifier;
+            if (!identifier) {
+                return;
+            }
+            const tokenSpan = element.querySelector(`.${prefix}prompt_manager_prompt_tokens[data-pm-tokens]`);
+            if (!(tokenSpan instanceof HTMLElement)) {
+                return;
+            }
+            const rawToken = counts[identifier];
+            const hasToken = Number.isFinite(rawToken) && Number(rawToken) >= 0;
+            const numericToken = hasToken ? Number(rawToken) : 0;
+            const displayValue = hasToken ? numericToken : '-';
+            tokenSpan.dataset.pmTokens = hasToken ? String(numericToken) : '';
+
+            const valueSpan = tokenSpan.querySelector('.prompt-manager-token-value');
+            if (valueSpan instanceof HTMLElement) {
+                valueSpan.textContent = String(displayValue);
+            } else {
+                tokenSpan.textContent = String(displayValue);
+            }
+
+            const indicator = tokenSpan.querySelector('.prompt-manager-token-indicator');
+            const prompt = this.getPromptById(identifier);
+            const { warningClass, warningTitle } = this.getPromptTokenWarning(prompt, numericToken);
+            if (indicator instanceof HTMLElement) {
+                indicator.className = ['prompt-manager-token-indicator', warningClass].filter(Boolean).join(' ').trim();
+                indicator.title = warningTitle ?? '';
+            }
+        });
     }
 
     /**
@@ -1678,28 +1844,16 @@ class PromptManager {
             const enabledClass = listEntry.enabled ? '' : `${prefix}prompt_manager_prompt_disabled`;
             const draggableClass = `${prefix}prompt_manager_prompt_draggable`;
             const markerClass = prompt.marker ? `${prefix}prompt_manager_marker` : '';
-            const tokens = this.tokenHandler?.getCounts()[prompt.identifier] ?? 0;
-
-            // Warn the user if the chat history goes below certain token thresholds.
-            let warningClass = '';
-            let warningTitle = '';
-
-            const tokenBudget = this.serviceSettings.openai_max_context - this.serviceSettings.openai_max_tokens;
-            if (this.tokenUsage > tokenBudget * 0.8 &&
-                'chatHistory' === prompt.identifier) {
-                const warningThreshold = this.configuration.warningTokenThreshold;
-                const dangerThreshold = this.configuration.dangerTokenThreshold;
-
-                if (tokens <= dangerThreshold) {
-                    warningClass = 'fa-solid tooltip fa-triangle-exclamation text_danger';
-                    warningTitle = 'Very little of your chat history is being sent, consider deactivating some other prompts.';
-                } else if (tokens <= warningThreshold) {
-                    warningClass = 'fa-solid tooltip fa-triangle-exclamation text_warning';
-                    warningTitle = 'Only a few messages worth chat history are being sent.';
-                }
+            const rawToken = this.tokenHandler?.getCounts()[prompt.identifier];
+            const hasTokenCount = Number.isFinite(rawToken) && Number(rawToken) >= 0;
+            const numericToken = hasTokenCount ? Number(rawToken) : 0;
+            const calculatedTokens = hasTokenCount ? numericToken : '-';
+            const { warningClass, warningTitle } = this.getPromptTokenWarning(prompt, numericToken);
+            const indicatorClasses = ['prompt-manager-token-indicator'];
+            if (warningClass) {
+                indicatorClasses.push(warningClass);
             }
-
-            const calculatedTokens = tokens ? tokens : '-';
+            const indicatorHtml = `<span class="${indicatorClasses.join(' ')}"${warningTitle ? ` title="${warningTitle}"` : ''}></span>`;
 
             let detachSpanHtml = '';
             if (this.isPromptDeletionAllowed(prompt)) {
@@ -1768,7 +1922,7 @@ class PromptManager {
                             </span>
                     </span>
 
-                    <span class="prompt_manager_prompt_tokens" data-pm-tokens="${calculatedTokens}"><span class="${warningClass}" title="${warningTitle}"> </span>${calculatedTokens}</span>
+                    <span class="prompt_manager_prompt_tokens" data-pm-tokens="${hasTokenCount ? numericToken : ''}">${indicatorHtml}<span class="prompt-manager-token-value">${calculatedTokens}</span></span>
                 </li>
             `;
         });
@@ -1791,6 +1945,8 @@ class PromptManager {
         Array.from(promptManagerList.querySelectorAll('.prompt-manager-toggle-action')).forEach(el => {
             el.addEventListener('click', this.handleToggle);
         });
+
+        this.updatePromptTokenDisplay();
     }
 
     /**
@@ -1875,6 +2031,7 @@ class PromptManager {
 
         toastr.success(t`Prompt import complete.`);
         this.saveServiceSettings().then(() => this.render());
+        this.recalculateTokensDebounced();
     }
 
     /**
