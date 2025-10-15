@@ -1532,6 +1532,28 @@ export async function prepareOpenAIMessages({
 }
 
 /**
+ * 将常见的服务端错误消息转换为本地化文案。
+ * @param {unknown} message
+ * @returns {unknown}
+ */
+function translateKnownApiError(message) {
+    if (!message) {
+        return message;
+    }
+
+    const normalized = String(message).trim();
+    if (normalized === 'Invalid URL') {
+        return t`URL链接无效`;
+    }
+
+    if (/Unauthorized$/i.test(normalized)) {
+        return normalized.replace(/Unauthorized$/i, '未授权');
+    }
+
+    return message;
+}
+
+/**
  * Handles errors during streaming requests.
  * @param {Response} response
  * @param {string} decoded - response text or decoded stream data
@@ -1552,32 +1574,20 @@ export function tryParseStreamingError(response, decoded, { quiet = false } = {}
         // these do not throw correctly (equiv to Error("[object Object]"))
         // if trying to fix "[object Object]" displayed to users, start here
 
-        const translateIfKnown = (message) => {
-            if (!message) {
-                return message;
-            }
-
-            const normalized = String(message).trim();
-            if (normalized === 'Invalid URL') {
-                return t`Invalid URL`;
-            }
-
-            return message;
-        };
-
         if (data.error) {
-            !quiet && toastr.error(translateIfKnown(data.error.message) || response.statusText, t`Chat Completion API`);
+            const translated = translateKnownApiError(data.error.message) || translateKnownApiError(response.statusText);
+            !quiet && toastr.error(translated, t`Chat Completion API`);
             throw new Error(data);
         }
 
         if (data.message) {
-            !quiet && toastr.error(translateIfKnown(data.message), t`Chat Completion API`);
+            !quiet && toastr.error(translateKnownApiError(data.message), t`Chat Completion API`);
             throw new Error(data);
         }
 
         if (data.detail) {
             const detailMessage = data.detail?.error?.message || response.statusText;
-            !quiet && toastr.error(translateIfKnown(detailMessage), t`Chat Completion API`);
+            !quiet && toastr.error(translateKnownApiError(detailMessage), t`Chat Completion API`);
             throw new Error(data);
         }
     }
@@ -2509,8 +2519,8 @@ async function sendOpenAIRequest(type, messages, signal, { jsonSchema = null } =
         checkModerationError(data);
 
         if (data.error) {
-            const message = data.error.message || response.statusText || t`Unknown error`;
-            toastr.error(message, t`API returned an error`);
+            const message = translateKnownApiError(data.error.message) || translateKnownApiError(response.statusText) || t`未知错误`;
+            toastr.error(message, t`API返回了一个错误`);
             throw new Error(message);
         }
 

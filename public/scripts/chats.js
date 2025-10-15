@@ -376,7 +376,7 @@ async function onFileAttach(file) {
  * @param {number} messageId Message ID
  */
 async function deleteMessageFile(messageId) {
-    const confirm = await callGenericPopup('您确定要删除此文件吗？', POPUP_TYPE.CONFIRM);
+    const confirm = await callGenericPopup('你确定要删除此文件吗？', POPUP_TYPE.CONFIRM);
 
     if (confirm !== POPUP_RESULT.AFFIRMATIVE) {
         console.debug('已取消删除文件操作');
