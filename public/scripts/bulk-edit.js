@@ -1,11 +1,11 @@
-import { characterGroupOverlay } from '../script.js';
+import { characterGroupOverlay, printCharacters } from '../script.js';
 import { BulkEditOverlay, BulkEditOverlayState, CharacterContextMenu } from './BulkEditOverlay.js';
 import { event_types, eventSource } from './events.js';
 
 let is_bulk_edit = false;
 
-const enableBulkEdit = () => {
-    enableBulkSelect();
+const enableBulkEdit = async () => {
+    await enableBulkSelect();
     characterGroupOverlay.selectState();
     // show the bulk edit option buttons
     $('.bulkEditOptionElement').show();
@@ -13,8 +13,8 @@ const enableBulkEdit = () => {
     characterGroupOverlay.updateSelectedCount(0);
 };
 
-const disableBulkEdit = () => {
-    disableBulkSelect();
+const disableBulkEdit = async () => {
+    await disableBulkSelect();
     characterGroupOverlay.browseState();
     // hide the bulk edit option buttons
     $('.bulkEditOptionElement').hide();
@@ -22,20 +22,20 @@ const disableBulkEdit = () => {
     characterGroupOverlay.updateSelectedCount(0);
 };
 
-const toggleBulkEditMode = (isBulkEdit) => {
+const toggleBulkEditMode = async (isBulkEdit) => {
     if (isBulkEdit) {
-        disableBulkEdit();
+        await disableBulkEdit();
     } else {
-        enableBulkEdit();
+        await enableBulkEdit();
     }
 };
 
 /**
  * Toggles bulk edit mode on/off when the edit button is clicked.
  */
-function onEditButtonClick() {
+async function onEditButtonClick() {
     console.log('Edit button clicked');
-    toggleBulkEditMode(is_bulk_edit);
+    await toggleBulkEditMode(is_bulk_edit);
 }
 
 /**
@@ -77,23 +77,24 @@ async function onDeleteButtonClick() {
 /**
  * Enables bulk selection by adding a checkbox next to each character.
  */
-function enableBulkSelect() {
-    $('#rm_print_characters_block .character_select').each((i, el) => {
-        // Prevent checkbox from adding multiple times (because of stage change callback)
+async function enableBulkSelect() {
+    const container = $('#rm_print_characters_block');
+    container.addClass('bulk_select');
+    await printCharacters(false);
+
+    container.find('.character_select').each((_, el) => {
         if ($(el).find('.bulk_select_checkbox').length > 0) {
             return;
         }
         const checkbox = $('<input type=\'checkbox\' class=\'bulk_select_checkbox\'>');
-        checkbox.on('change', () => {
-            // Do something when the checkbox is changed
-        });
+        checkbox.on('change', () => {});
         $(el).prepend(checkbox);
     });
+
+    container.addClass('bulk_select');
     $('#rm_print_characters_block.group_overlay_mode_select .bogus_folder_select, #rm_print_characters_block.group_overlay_mode_select .group_select')
         .addClass('disabled');
 
-    $('#rm_print_characters_block').addClass('bulk_select');
-    // We also need to disable the default click event for the character_select divs
     $(document).on('click', '.bulk_select_checkbox', function (event) {
         event.stopImmediatePropagation();
     });
@@ -102,11 +103,16 @@ function enableBulkSelect() {
 /**
  * Disables bulk selection by removing the checkboxes.
  */
-function disableBulkSelect() {
+async function disableBulkSelect() {
+    const container = $('#rm_print_characters_block');
+    container.removeClass('bulk_select');
+    $(document).off('click', '.bulk_select_checkbox');
+
+    await printCharacters(false);
+
     $('.bulk_select_checkbox').remove();
     $('#rm_print_characters_block.group_overlay_mode_select .bogus_folder_select, #rm_print_characters_block.group_overlay_mode_select .group_select')
         .removeClass('disabled');
-    $('#rm_print_characters_block').removeClass('bulk_select');
 }
 
 /**
@@ -114,8 +120,8 @@ function disableBulkSelect() {
  */
 export function initBulkEdit() {
     characterGroupOverlay.addStateChangeCallback((state) => {
-        if (state === BulkEditOverlayState.select) enableBulkEdit();
-        if (state === BulkEditOverlayState.browse) disableBulkEdit();
+        if (state === BulkEditOverlayState.select) enableBulkEdit().catch(console.error);
+        if (state === BulkEditOverlayState.browse) disableBulkEdit().catch(console.error);
     });
 
     $('#bulkEditButton').on('click', onEditButtonClick);

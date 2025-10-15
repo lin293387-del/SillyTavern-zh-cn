@@ -14,6 +14,7 @@ import {
     getEntitiesList,
     buildAvatarList,
     selectCharacterById,
+    ensureCharacterCardVisible,
     eventSource,
     event_types,
     menu_type,
@@ -286,9 +287,11 @@ async function RA_autoloadchat() {
         if (active_character_id !== -1) {
             await selectCharacterById(active_character_id);
 
-            // Do a little tomfoolery to spoof the tag selector
-            const selectedCharElement = $(`#rm_print_characters_block .character_select[chid="${active_character_id}"]`);
-            applyTagsOnCharacterSelect.call(selectedCharElement);
+            const cardDom = await ensureCharacterCardVisible(active_character_id, { align: 'nearest', timeout: 1000 });
+            const selectedCharElement = cardDom ? $(cardDom) : $(`#rm_print_characters_block .character_select[data-chid="${active_character_id}"]`);
+            if (selectedCharElement.length) {
+                applyTagsOnCharacterSelect.call(selectedCharElement);
+            }
         } else {
             setActiveCharacter(null);
             saveSettingsDebounced();

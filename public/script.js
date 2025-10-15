@@ -2437,6 +2437,287 @@ addManagedEventListener(window, 'virtualization-toggle', (event) => {
 initChatVirtualList();
 refreshChatOffscreenState({ rebind: true });
 
+const RIGHT_PANEL_CONTAINER_SELECTOR = '#rm_print_characters_block';
+const RIGHT_PANEL_META_BACK_KEY = 'meta:back';
+const RIGHT_PANEL_META_EMPTY_KEY = 'meta:empty';
+const RIGHT_PANEL_META_HIDDEN_KEY = 'meta:hidden';
+const RIGHT_PANEL_CHARACTER_PREFIX = 'character:';
+const RIGHT_PANEL_GROUP_PREFIX = 'group:';
+const RIGHT_PANEL_TAG_PREFIX = 'tag:';
+const RIGHT_PANEL_VIRTUALIZE_THRESHOLD = 30;
+
+/** @type {VirtualList|null} */
+let rightPanelVirtualList = null;
+/** @type {RightPanelVirtualItem[]} */
+let rightPanelVirtualEntities = [];
+const rightPanelDomRegistry = new Map();
+const rightPanelIndexByKey = new Map();
+const rightPanelCharacterIndexById = new Map();
+const rightPanelGroupIndexById = new Map();
+/** @type {Map<string, Set<(element: HTMLElement|null) => void>>} */
+const rightPanelMountWaiters = new Map();
+let rightPanelLastRenderWasVirtualized = false;
+
+/**
+ * @typedef {object} RightPanelVirtualItem
+ * @property {'character'|'group'|'tag'|'back'|'empty'|'hidden'} type
+ * @property {string} key
+ * @property {number|string|undefined} [id]
+ * @property {Entity} [entity]
+ * @property {() => HTMLElement|null} render
+ */
+
+function getRightPanelContainerElement() {
+    return /** @type {HTMLElement|null} */ (document.querySelector(RIGHT_PANEL_CONTAINER_SELECTOR));
+}
+
+function getRightPanelOverscan() {
+    if (document.body.classList.contains('charListGrid')) {
+        return 8;
+    }
+    return 5;
+}
+
+function getRightPanelEstimatedHeight() {
+    if (document.body.classList.contains('charListGrid')) {
+        return 180;
+    }
+    if (document.body.classList.contains('big-avatars')) {
+        return 150;
+    }
+    return 120;
+}
+
+function registerRightPanelDom(key, element) {
+    if (!key || !element) {
+        return;
+    }
+    rightPanelDomRegistry.set(key, element);
+    const waiters = rightPanelMountWaiters.get(key);
+    if (waiters && waiters.size) {
+        for (const resolve of Array.from(waiters)) {
+            try {
+                resolve(element);
+            } catch (error) {
+                console.error('rightPanelMount waiter failed', error);
+            }
+        }
+        rightPanelMountWaiters.delete(key);
+    }
+}
+
+function unregisterRightPanelDom(key, element) {
+    if (!key) {
+        return;
+    }
+    const current = rightPanelDomRegistry.get(key);
+    if (element && current && current !== element) {
+        return;
+    }
+    rightPanelDomRegistry.delete(key);
+}
+
+function rightPanelRenderItem(index) {
+    const descriptor = rightPanelVirtualEntities[index];
+    if (!descriptor) {
+        return null;
+    }
+    try {
+        return descriptor.render?.() ?? null;
+    } catch (error) {
+        console.error('渲染右侧面板虚拟项失败', descriptor, error);
+        return null;
+    }
+}
+
+function handleRightPanelItemMount(index, element) {
+    const descriptor = rightPanelVirtualEntities[index];
+    if (!descriptor || !element) {
+        return;
+    }
+    registerRightPanelDom(descriptor.key, element);
+    if (descriptor.type === 'character' && $('#rm_print_characters_block').hasClass('bulk_select')) {
+        ensureBulkCheckboxForElement(element);
+    }
+}
+
+function handleRightPanelItemUnmount(index, element) {
+    const descriptor = rightPanelVirtualEntities[index];
+    if (!descriptor) {
+        return;
+    }
+    unregisterRightPanelDom(descriptor.key, element);
+}
+
+function initRightPanelVirtualList() {
+    if (!isVirtualizationEnabled()) {
+        destroyRightPanelVirtualList();
+        return;
+    }
+    if (rightPanelVirtualList) {
+        return;
+    }
+    const container = getRightPanelContainerElement();
+    if (!container) {
+        return;
+    }
+    rightPanelVirtualList = new VirtualList({
+        container,
+        getItemCount: () => rightPanelVirtualEntities.length,
+        renderItem: rightPanelRenderItem,
+        getItemKey: (index) => rightPanelVirtualEntities[index]?.key ?? String(index),
+        estimatedItemHeight: getRightPanelEstimatedHeight(),
+        overscan: getRightPanelOverscan(),
+        useSpacers: true,
+        onMount: handleRightPanelItemMount,
+        onUnmount: handleRightPanelItemUnmount,
+    });
+    rightPanelVirtualList.bindScrollElement(container);
+    rightPanelVirtualList.attachScrollHandler();
+}
+
+function destroyRightPanelVirtualList() {
+    if (rightPanelVirtualList) {
+        rightPanelVirtualList.destroy();
+        rightPanelVirtualList = null;
+    }
+    rightPanelVirtualEntities = [];
+    rightPanelDomRegistry.clear();
+    rightPanelIndexByKey.clear();
+    rightPanelCharacterIndexById.clear();
+    rightPanelGroupIndexById.clear();
+    rightPanelMountWaiters.clear();
+    rightPanelLastRenderWasVirtualized = false;
+}
+
+function setRightPanelVirtualItems(items, { restoreScrollTop } = {}) {
+    rightPanelVirtualEntities = items;
+    rightPanelIndexByKey.clear();
+    rightPanelCharacterIndexById.clear();
+    rightPanelGroupIndexById.clear();
+    for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        rightPanelIndexByKey.set(item.key, i);
+        if (item.type === 'character' && item.id !== undefined) {
+            rightPanelCharacterIndexById.set(String(item.id), i);
+        }
+        if (item.type === 'group' && item.id !== undefined) {
+            rightPanelGroupIndexById.set(String(item.id), i);
+        }
+    }
+    if (rightPanelVirtualList) {
+        rightPanelVirtualList.setDataLength(items.length);
+        rightPanelVirtualList.refresh();
+    }
+    const container = getRightPanelContainerElement();
+    if (container && typeof restoreScrollTop === 'number') {
+        container.scrollTop = restoreScrollTop;
+    }
+}
+
+function ensureBulkCheckboxForElement(element) {
+    if (!(element instanceof HTMLElement)) {
+        return;
+    }
+    if (!element.classList.contains('character_select')) {
+        return;
+    }
+    if (element.querySelector('.bulk_select_checkbox')) {
+        return;
+    }
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.className = 'bulk_select_checkbox';
+    checkbox.addEventListener('click', (event) => {
+        event.stopImmediatePropagation();
+    });
+    element.prepend(checkbox);
+}
+
+async function ensureRightPanelEntityVisibleByKey(key, { align = 'nearest', timeout = 500 } = {}) {
+    if (!key) {
+        return null;
+    }
+    const existing = rightPanelDomRegistry.get(key);
+    if (existing?.isConnected) {
+        return existing;
+    }
+    const index = rightPanelIndexByKey.get(key);
+    if (index === undefined) {
+        return null;
+    }
+    initRightPanelVirtualList();
+    const container = getRightPanelContainerElement();
+    if (!container) {
+        return null;
+    }
+    if (rightPanelVirtualList) {
+        const mode = align === 'center' || align === 'end' ? align : 'start';
+        rightPanelVirtualList.scrollToIndex(index, mode);
+    }
+    return await new Promise((resolve) => {
+        const waiters = rightPanelMountWaiters.get(key) ?? new Set();
+        waiters.add(resolve);
+        rightPanelMountWaiters.set(key, waiters);
+        setTimeout(() => {
+            if (waiters.delete(resolve) && waiters.size === 0) {
+                rightPanelMountWaiters.delete(key);
+            }
+            resolve(rightPanelDomRegistry.get(key) ?? null);
+        }, timeout);
+    });
+}
+
+export async function ensureCharacterCardVisible(characterIndex, { align = 'nearest', timeout = 500 } = {}) {
+    const key = RIGHT_PANEL_CHARACTER_PREFIX + String(characterIndex);
+    const element = await ensureRightPanelEntityVisibleByKey(key, { align, timeout });
+    if (!element) {
+        return document.getElementById(`CharID${characterIndex}`);
+    }
+    return element;
+}
+
+export function getCharacterCardDom(characterIndex) {
+    const key = RIGHT_PANEL_CHARACTER_PREFIX + String(characterIndex);
+    const element = rightPanelDomRegistry.get(key);
+    if (element?.isConnected) {
+        return element;
+    }
+    return document.getElementById(`CharID${characterIndex}`);
+}
+
+export function hasCharacterCardInVirtualList(characterIndex) {
+    return rightPanelCharacterIndexById.has(String(characterIndex));
+}
+
+export async function ensureGroupCardVisible(groupId, { align = 'nearest', timeout = 500 } = {}) {
+    const key = RIGHT_PANEL_GROUP_PREFIX + String(groupId);
+    const element = await ensureRightPanelEntityVisibleByKey(key, { align, timeout });
+    if (element) {
+        return element;
+    }
+    const escapedGrid = (typeof CSS !== 'undefined' && typeof CSS.escape === 'function')
+        ? CSS.escape(String(groupId))
+        : String(groupId).replace(/"/g, '\\"');
+    return document.querySelector(`#rm_print_characters_block [grid="${escapedGrid}"]`);
+}
+
+export function getGroupCardDom(groupId) {
+    const key = RIGHT_PANEL_GROUP_PREFIX + String(groupId);
+    const element = rightPanelDomRegistry.get(key);
+    if (element?.isConnected) {
+        return element;
+    }
+    const escapedGrid = (typeof CSS !== 'undefined' && typeof CSS.escape === 'function')
+        ? CSS.escape(String(groupId))
+        : String(groupId).replace(/"/g, '\\"');
+    return document.querySelector(`#rm_print_characters_block [grid="${escapedGrid}"]`);
+}
+
+export function hasGroupCardInVirtualList(groupId) {
+    return rightPanelGroupIndexById.has(String(groupId));
+}
+
 let dialogueResolve = null;
 let dialogueCloseStop = false;
 export let chat_metadata = {};
@@ -4437,27 +4718,142 @@ export async function printCharacters(fullRefresh = false) {
         formatSizeChanger: renderPaginationDropdown(pageSize, sizeChangerOptions),
         showNavigator: true,
         callback: async function (/** @type {Entity[]} */ data) {
-            $(listId).empty();
-            if (power_user.bogus_folders && isBogusFolderOpen()) {
-                $(listId).append(getBackBlock());
+            const $list = $(listId);
+            const restoreScrollTop = fullRefresh ? 0 : currentScrollTop;
+            const isBulkSelectActive = $list.hasClass('bulk_select');
+            const shouldVirtualize = isVirtualizationEnabled()
+                && data.length >= RIGHT_PANEL_VIRTUALIZE_THRESHOLD
+                && !isBulkSelectActive;
+
+            const renderLegacyList = async () => {
+                if (rightPanelVirtualList) {
+                    destroyRightPanelVirtualList();
+                }
+                $list.empty();
+                if (power_user.bogus_folders && isBogusFolderOpen()) {
+                    $list.append(getBackBlock());
+                }
+                if (!data.length) {
+                    const emptyBlock = await getEmptyBlock();
+                    $list.append(emptyBlock);
+                }
+                let displayCount = 0;
+                for (const entity of data) {
+                    switch (entity.type) {
+                        case 'character':
+                            $list.append(getCharacterBlock(entity.item, entity.id));
+                            displayCount++;
+                            break;
+                        case 'group':
+                            $list.append(getGroupBlock(entity.item));
+                            displayCount++;
+                            break;
+                        case 'tag':
+                            $list.append(getTagBlock(entity.item, entity.entities, entity.hidden, entity.isUseless));
+                            break;
+                    }
+                }
+
+                const hidden = (characters.length + groups.length) - displayCount;
+                if (hidden > 0 && entitiesFilter.hasAnyFilter()) {
+                    const hiddenBlock = await getHiddenBlock(hidden);
+                    $list.append(hiddenBlock);
+                }
+                $list.scrollTop(restoreScrollTop);
+                rightPanelLastRenderWasVirtualized = false;
+                localizePagination($('#rm_print_characters_pagination'));
+                eventSource.emit(event_types.CHARACTER_PAGE_LOADED);
+            };
+
+            if (!shouldVirtualize) {
+                await renderLegacyList();
+                return;
             }
+
+            if (!rightPanelVirtualList) {
+                $list.empty();
+            }
+            initRightPanelVirtualList();
+            if (!rightPanelVirtualList) {
+                await renderLegacyList();
+                return;
+            }
+
+            const virtualItems = [];
+
+            if (power_user.bogus_folders && isBogusFolderOpen()) {
+                const backTemplate = getBackBlock();
+                if (backTemplate?.length) {
+                    const node = backTemplate[0];
+                    virtualItems.push({
+                        type: 'back',
+                        key: RIGHT_PANEL_META_BACK_KEY,
+                        render: () => node.cloneNode(true),
+                    });
+                }
+            }
+
             if (!data.length) {
                 const emptyBlock = await getEmptyBlock();
-                $(listId).append(emptyBlock);
+                if (emptyBlock?.length) {
+                    const node = emptyBlock[0];
+                    virtualItems.push({
+                        type: 'empty',
+                        key: RIGHT_PANEL_META_EMPTY_KEY,
+                        render: () => node.cloneNode(true),
+                    });
+                }
             }
+
             let displayCount = 0;
-            for (const i of data) {
-                switch (i.type) {
+            for (const entity of data) {
+                switch (entity.type) {
                     case 'character':
-                        $(listId).append(getCharacterBlock(i.item, i.id));
+                        virtualItems.push({
+                            type: 'character',
+                            key: RIGHT_PANEL_CHARACTER_PREFIX + String(entity.id),
+                            id: entity.id,
+                            entity,
+                            render: () => {
+                                const block = getCharacterBlock(entity.item, entity.id);
+                                if (!block) {
+                                    return null;
+                                }
+                                return block instanceof jQuery ? block.get(0) : block;
+                            },
+                        });
                         displayCount++;
                         break;
                     case 'group':
-                        $(listId).append(getGroupBlock(i.item));
+                        virtualItems.push({
+                            type: 'group',
+                            key: RIGHT_PANEL_GROUP_PREFIX + String(entity.id),
+                            id: entity.id,
+                            entity,
+                            render: () => {
+                                const block = getGroupBlock(entity.item);
+                                if (!block) {
+                                    return null;
+                                }
+                                return block instanceof jQuery ? block.get(0) : block;
+                            },
+                        });
                         displayCount++;
                         break;
                     case 'tag':
-                        $(listId).append(getTagBlock(i.item, i.entities, i.hidden, i.isUseless));
+                        virtualItems.push({
+                            type: 'tag',
+                            key: RIGHT_PANEL_TAG_PREFIX + String(entity.id),
+                            id: entity.id,
+                            entity,
+                            render: () => {
+                                const block = getTagBlock(entity.item, entity.entities, entity.hidden, entity.isUseless);
+                                if (!block) {
+                                    return null;
+                                }
+                                return block instanceof jQuery ? block.get(0) : block;
+                            },
+                        });
                         break;
                 }
             }
@@ -4465,10 +4861,19 @@ export async function printCharacters(fullRefresh = false) {
             const hidden = (characters.length + groups.length) - displayCount;
             if (hidden > 0 && entitiesFilter.hasAnyFilter()) {
                 const hiddenBlock = await getHiddenBlock(hidden);
-                $(listId).append(hiddenBlock);
+                if (hiddenBlock?.length) {
+                    const node = hiddenBlock[0];
+                    virtualItems.push({
+                        type: 'hidden',
+                        key: RIGHT_PANEL_META_HIDDEN_KEY,
+                        render: () => node.cloneNode(true),
+                    });
+                }
             }
-            localizePagination($('#rm_print_characters_pagination'));
 
+            setRightPanelVirtualItems(virtualItems, { restoreScrollTop });
+            rightPanelLastRenderWasVirtualized = true;
+            localizePagination($('#rm_print_characters_pagination'));
             eventSource.emit(event_types.CHARACTER_PAGE_LOADED);
         },
         afterSizeSelectorChange: function (e, size) {
@@ -4479,7 +4884,9 @@ export async function printCharacters(fullRefresh = false) {
             saveCharactersPage = e;
         },
         afterRender: function () {
-            $(listId).scrollTop(currentScrollTop);
+            if (!rightPanelLastRenderWasVirtualized) {
+                $(listId).scrollTop(currentScrollTop);
+            }
         },
     });
 
@@ -13630,21 +14037,40 @@ export function select_rm_info(type, charId, previousCharId = null) {
             try {
                 const perPage = Number(accountStorage.getItem('Characters_PerPage')) || per_page_default;
                 const page = Math.floor(charIndex / perPage) + 1;
-                const selector = `#rm_print_characters_block [title*="${avatarFileName}"]`;
+                const characterEntity = charData[charIndex];
+                const characterNumericId = characterEntity?.id;
                 $('#rm_print_characters_pagination').pagination('go', page);
 
-                waitUntilCondition(() => document.querySelector(selector) !== null).then(() => {
-                    const element = $(selector).parent();
+                waitUntilCondition(() => {
+                    if (characterNumericId === undefined) {
+                        return false;
+                    }
+                    if (hasCharacterCardInVirtualList(characterNumericId)) {
+                        return true;
+                    }
+                    return document.getElementById(`CharID${characterNumericId}`) !== null;
+                }).then(async () => {
+                    if (characterNumericId === undefined) {
+                        return;
+                    }
+                    const domElement = await ensureCharacterCardVisible(characterNumericId, { align: 'center', timeout: 1000 });
+                    const element = domElement ? $(domElement) : $(document.getElementById(`CharID${characterNumericId}`));
 
-                    if (element.length === 0) {
+                    if (!element.length) {
                         console.log(`Could not find element for character ${charId}`);
                         return;
                     }
 
-                    const scrollOffset = element.offset().top - element.parent().offset().top;
-                    element.parent().scrollTop(scrollOffset);
+                    const container = element.parent();
+                    if (!container.length) {
+                        return;
+                    }
+
+                    const parentOffset = container.offset()?.top ?? 0;
+                    const elementOffset = element.offset()?.top ?? parentOffset;
+                    container.scrollTop(container.scrollTop() + elementOffset - parentOffset);
                     flashHighlight(element, 5000);
-                });
+                }).catch(console.error);
             } catch (e) {
                 console.error(e);
             }
@@ -13663,14 +14089,39 @@ export function select_rm_info(type, charId, previousCharId = null) {
             const perPage = Number(accountStorage.getItem('Characters_PerPage')) || per_page_default;
             const page = Math.floor(charIndex / perPage) + 1;
             $('#rm_print_characters_pagination').pagination('go', page);
-            const selector = `#rm_print_characters_block [grid="${charId}"]`;
             try {
-                waitUntilCondition(() => document.querySelector(selector) !== null).then(() => {
-                    const element = $(selector);
-                    const scrollOffset = element.offset().top - element.parent().offset().top;
-                    element.parent().scrollTop(scrollOffset);
+                waitUntilCondition(() => {
+                    if (charId === undefined || charId === null) {
+                        return false;
+                    }
+                    if (hasGroupCardInVirtualList(charId)) {
+                        return true;
+                    }
+                    const escapedGrid = (typeof CSS !== 'undefined' && typeof CSS.escape === 'function')
+                        ? CSS.escape(String(charId))
+                        : String(charId).replace(/"/g, '\\"');
+                    return document.querySelector(`#rm_print_characters_block [grid="${escapedGrid}"]`) !== null;
+                }).then(async () => {
+                    const domElement = await ensureGroupCardVisible(charId, { align: 'center', timeout: 1000 });
+                    let element = domElement ? $(domElement) : $();
+                    if (!element.length) {
+                        const escapedGrid = (typeof CSS !== 'undefined' && typeof CSS.escape === 'function')
+                            ? CSS.escape(String(charId))
+                            : String(charId).replace(/"/g, '\\"');
+                        element = $(`#rm_print_characters_block [grid="${escapedGrid}"]`);
+                    }
+                    if (!element.length) {
+                        return;
+                    }
+                    const container = element.parent();
+                    if (!container.length) {
+                        return;
+                    }
+                    const parentOffset = container.offset()?.top ?? 0;
+                    const elementOffset = element.offset()?.top ?? parentOffset;
+                    container.scrollTop(container.scrollTop() + elementOffset - parentOffset);
                     flashHighlight(element, 5000);
-                });
+                }).catch(console.error);
             } catch (e) {
                 console.error(e);
             }
