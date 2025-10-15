@@ -2039,7 +2039,7 @@ const chatRenderingEnv = {
     formatGenerationTimer,
 };
 
-const CHAT_MIN_WINDOW = 50;
+const CHAT_MIN_WINDOW = 2;
 const CHAT_OVERSCAN = 10;
 let chatVirtualList = null;
 let chatRenderStart = 0;
@@ -2282,11 +2282,11 @@ function initChatVirtualList() {
 }
 
 function getChatWindowLimit() {
-    const raw = Number(power_user.chat_truncation) || 0;
-    if (raw <= 0) {
+    const raw = Number(power_user.chat_truncation);
+    if (!Number.isFinite(raw) || raw <= 0) {
         return chat.length;
     }
-    return Math.max(CHAT_MIN_WINDOW, raw);
+    return Math.max(CHAT_MIN_WINDOW, Math.round(raw));
 }
 
 function chatRenderItem(index) {
