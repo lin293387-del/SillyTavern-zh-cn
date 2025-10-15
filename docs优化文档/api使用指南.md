@@ -169,20 +169,27 @@ token.dispose();
 
 ## variables 模块
 
-- `variables.getPowerUser()` / `variables.updatePowerUser(updater)`：读写 `power_user` 并自动应用样式、保存设置。
-- `variables.getSettings()` / `variables.updateSettings(updater)`：读写全局设置并触发 `SETTINGS_UPDATED`。
-- `variables.mainApi`（只读）：当前主 API。
-- `variables.onSettingsUpdated(handler)`：监听设置变更。
-- 作用域支持 `message` / `chat` / `global` / `character` / `script`，角色数据写入角色扩展区，脚本变量统一存放于 `extension_settings.variables.scripts`，事件 detail 会附带 `characterId`、`scriptId`。
-- Promise 工具：
-  - `variables.replaceVariables(payload, options?)`
-  - `variables.updateVariablesWith(updater, options?)`
-  - `variables.insertOrAssignVariables(payload, options?)`
-  - `variables.insertVariables(payload, options?)`
-  - `variables.deleteVariable(path, options?)`
-- `variables.snapshot(options?)`：默认返回全量快照，接受 `{ incremental, track }` 以获取差分并控制是否更新基准。
-- `variables.scope` 辅助：`variables.message/chat/global/character/script` 皆可使用 `get/set/remove/transaction` 快捷方法。
-- 调试入口：`window.__variableDebug__` 提供 `snapshot/subscribe/get/set/remove`，平行于事件桥接（`variables.subscribe` → `variables_updated`、`variables_batch_updated`、`st-variables-updated`）。
+### 与旧版的核心区别
+- `variableService` 统一托管 `message/chat/global/character/script` 五个作用域，所有读取结果会先克隆，避免扩展无意间污染底层状态；索引式写入改为使用 `mutate` 自动构造数组或对象，从源头减少 `JSON.parse/stringify` 的冗余。
+- 事件桥接完全保留：`variables.subscribe` → `event_types.VARIABLES_UPDATED` / `VARIABLES_BATCH_UPDATED` → DOM `st-variables-updated/st-variables-batch-updated`，扩展无需改动即可感知所有更新；同时提供 `variables.mutations.skip/remove` 常量支持在 `mutate` 中跳过或删除变量。
+- 新增运行期监控：当服务器 `config.json` 中启用 `variableMonitoring` 时，可通过 SDK 读取订阅数、事件吞吐量与 Top 事件类型，定位扩展侧监听风暴比旧版本更直观。
+
+### 常量与基础方法
+- `variables.scopes`、`variables.signals`、`variables.mutations` 分别映射 `VARIABLE_SCOPE`、事件类型、`mutate` 返回值。
+- `variables.get/set/remove/transaction/mutate(scope, key, payload, options?)`：`mutate` 回调签名为 `(draft, context) => nextValue | variables.mutations.*`，适合原子更新复杂结构。
+- 作用域对象 `variables.message/chat/global/character/script` 具备同名便捷方法；角色/脚本作用域的事件 detail 会附带 `characterId/scriptId`，帮助扩展精准区分来源。
+
+### 订阅、设置与 Promise 工具
+- `variables.subscribe(handler)` / `variables.watch(handler)` 返回 disposer，与事件桥接保持一致。
+- `variables.getPowerUser()` / `variables.updatePowerUser(updater)`、`variables.getSettings()` / `variables.updateSettings(updater)`、`variables.mainApi`、`variables.onSettingsUpdated(handler)` 继续提供设置读写功能并自动广播 `SETTINGS_UPDATED`。
+- Promise 工具：`variables.replaceVariables()`、`variables.updateVariablesWith()`、`variables.insertOrAssignVariables()`、`variables.insertVariables()`、`variables.deleteVariable()`，便于扩展按需替换或增量合并变量。
+
+### 快照与监控
+- `variables.snapshot({ incremental, track }?)` 支持差分快照与基准控制，常用于外部同步或调试。
+- `variables.getMonitoringSnapshot()` / `variables.refreshMonitoringConfig()` 可读取/刷新运行期监控指标（需开启 `variableMonitoring`），便于诊断扩展造成的事件风暴。
+
+### 调试入口
+- `window.__variableDebug__` 暴露 `snapshot/subscribe/get/set/remove/mutate`、`mutations.skip/remove` 以及 `getMonitoringSnapshot/refreshMonitoringConfig`，与 SDK 同步更新，可直接在 DevTools 调用。
 
 ---
 
