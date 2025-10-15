@@ -235,7 +235,7 @@ import {
     navigation_option,
 } from './scripts/utils.js';
 import { debounce_timeout, GENERATION_TYPE_TRIGGERS, IGNORE_SYMBOL, inject_ids } from './scripts/constants.js';
-import { VARIABLE_SCOPE, VARIABLE_EVENTS, createVariableService } from './scripts/variable-service.js';
+import { VARIABLE_SCOPE, VARIABLE_EVENTS, MUTATION_REMOVE, MUTATION_SKIP, createVariableService } from './scripts/variable-service.js';
 
 import {
     cancelDebouncedMetadataSave,
@@ -3119,9 +3119,21 @@ export const variableService = createVariableService({
     getScriptStore: (options = {}) => ensureScriptVariablesContext(options),
     persistScriptVariables: () => saveSettingsDebounced(),
     listScriptStores: () => listScriptVariableStores(),
+    getVariableMonitoringConfig: () => variableMonitoringConfig,
 });
 
 sillyTavernRoot.variableService = variableService;
+
+export function getVariableMonitoringConfig() {
+    return { ...variableMonitoringConfig };
+}
+
+export function applyVariableMonitoringConfig(config = {}) {
+    variableMonitoringConfig = normalizeVariableMonitoringConfig(config);
+    if (typeof variableService?.refreshMonitoringConfig === 'function') {
+        variableService.refreshMonitoringConfig();
+    }
+}
 
 const SHOWDOWN_CACHE_LIMIT = 50;
 const SHOWDOWN_CACHE_THRESHOLD = 2048;
@@ -3225,9 +3237,16 @@ if (typeof window !== 'undefined') {
         subscribe: (handler) => variableService.subscribe(handler),
         scopes: VARIABLE_SCOPE,
         signals: VARIABLE_EVENTS,
+        mutations: {
+            skip: MUTATION_SKIP,
+            remove: MUTATION_REMOVE,
+        },
         get: (scope, key, options = {}) => variableService.get(scope, key, options),
         set: (scope, key, value, options = {}) => variableService.set(scope, key, value, options),
+        mutate: (scope, key, mutator, options = {}) => variableService.mutate(scope, key, mutator, options),
         remove: (scope, key, options = {}) => variableService.remove(scope, key, options),
+        monitoring: () => variableService.getMonitoringSnapshot(),
+        refreshMonitoringConfig: () => variableService.refreshMonitoringConfig(),
     });
 }
 
@@ -4157,6 +4176,36 @@ export const DEFAULT_DEBUG_LOGGING_FLAGS = Object.freeze({
 
 export let debugLoggingFlags = { ...DEFAULT_DEBUG_LOGGING_FLAGS };
 
+// 变量监控配置：通过 config.json => variableMonitoring 控制，默认关闭避免额外开销。
+export const DEFAULT_VARIABLE_MONITORING_CONFIG = Object.freeze({
+    enabled: false,
+    logIntervalMs: 15000,
+    topEventTypes: 5,
+});
+
+let variableMonitoringConfig = { ...DEFAULT_VARIABLE_MONITORING_CONFIG };
+
+function normalizeVariableMonitoringConfig(config = {}) {
+    const normalized = { ...DEFAULT_VARIABLE_MONITORING_CONFIG };
+    if (!config || typeof config !== 'object') {
+        return normalized;
+    }
+    if (Object.prototype.hasOwnProperty.call(config, 'enabled')) {
+        normalized.enabled = Boolean(config.enabled);
+    }
+    if (Object.prototype.hasOwnProperty.call(config, 'logIntervalMs')) {
+        const interval = Number(config.logIntervalMs);
+        if (!Number.isNaN(interval) && interval >= 1000) {
+            normalized.logIntervalMs = interval;
+        }
+    }
+    if (Object.prototype.hasOwnProperty.call(config, 'topEventTypes')) {
+        const topCount = Math.max(1, Number(config.topEventTypes) || DEFAULT_VARIABLE_MONITORING_CONFIG.topEventTypes);
+        normalized.topEventTypes = topCount;
+    }
+    return normalized;
+}
+
 function normalizeDebugLogging(flags = {}) {
     const normalized = { ...DEFAULT_DEBUG_LOGGING_FLAGS };
     if (!flags || typeof flags !== 'object') {
@@ -4397,6 +4446,7 @@ export function getBackendApiStatus() {
         loggingEnabled: backendApiLoggingEnabled,
         extensionToastsEnabled: extensionToastNotificationsEnabled,
         debugLogging: { ...debugLoggingFlags },
+        variableMonitoring: getVariableMonitoringConfig(),
     };
 }
 
@@ -4427,11 +4477,13 @@ async function loadBackendApiToggles() {
         backendApiLoggingEnabled = Boolean(data?.loggingEnabled);
         extensionToastNotificationsEnabled = data?.extensionToastsEnabled !== false;
         applyDebugLoggingFlags(data?.debugLogging ?? DEFAULT_DEBUG_LOGGING_FLAGS);
+        applyVariableMonitoringConfig(data?.variableMonitoring ?? DEFAULT_VARIABLE_MONITORING_CONFIG);
         eventSource.emit(event_types.BACKEND_API_STATUS_CHANGED, {
             toggles: { ...backendApiToggles },
             loggingEnabled: backendApiLoggingEnabled,
             extensionToastsEnabled: extensionToastNotificationsEnabled,
             debugLogging: { ...debugLoggingFlags },
+            variableMonitoring: getVariableMonitoringConfig(),
             source: 'remote',
         }).catch(console.error);
     } catch (error) {
@@ -4440,11 +4492,13 @@ async function loadBackendApiToggles() {
         backendApiLoggingEnabled = false;
         extensionToastNotificationsEnabled = true;
         applyDebugLoggingFlags(DEFAULT_DEBUG_LOGGING_FLAGS);
+        applyVariableMonitoringConfig(DEFAULT_VARIABLE_MONITORING_CONFIG);
         eventSource.emit(event_types.BACKEND_API_STATUS_CHANGED, {
             toggles: { ...backendApiToggles },
             loggingEnabled: backendApiLoggingEnabled,
             extensionToastsEnabled: extensionToastNotificationsEnabled,
             debugLogging: { ...debugLoggingFlags },
+            variableMonitoring: getVariableMonitoringConfig(),
             source: 'fallback',
             error: error?.message ?? String(error),
         }).catch(console.error);
@@ -8620,6 +8674,7 @@ function createVariablesApi() {
         get: (key, options = {}) => variableService.get(scope, key, options),
         set: (key, value, options = {}) => variableService.set(scope, key, value, options),
         remove: (key, options = {}) => variableService.remove(scope, key, options),
+        mutate: (key, mutator, options = {}) => variableService.mutate(scope, key, mutator, options),
         transaction: (callback, options = {}) => variableService.transaction(scope, callback, options),
     });
 
@@ -8686,13 +8741,20 @@ function createVariablesApi() {
     return Object.freeze({
         scopes: VARIABLE_SCOPE,
         signals: VARIABLE_EVENTS,
+        mutations: {
+            skip: MUTATION_SKIP,
+            remove: MUTATION_REMOVE,
+        },
         subscribe,
         watch: subscribe,
         get: (scope, key, options = {}) => variableService.get(scope, key, options),
         set: (scope, key, value, options = {}) => variableService.set(scope, key, value, options),
+        mutate: (scope, key, mutator, options = {}) => variableService.mutate(scope, key, mutator, options),
         remove: (scope, key, options = {}) => variableService.remove(scope, key, options),
         transaction: (scope, callback, options = {}) => variableService.transaction(scope, callback, options),
         snapshot: (options = {}) => variableService.snapshot(options),
+        getMonitoringSnapshot: () => variableService.getMonitoringSnapshot(),
+        refreshMonitoringConfig: () => variableService.refreshMonitoringConfig(),
         message: createScopedApi(VARIABLE_SCOPE.MESSAGE),
         chat: createScopedApi(VARIABLE_SCOPE.CHAT),
         global: createScopedApi(VARIABLE_SCOPE.GLOBAL),

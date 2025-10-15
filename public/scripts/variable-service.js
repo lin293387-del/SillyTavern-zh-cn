@@ -12,7 +12,41 @@ const VARIABLE_EVENTS = Object.freeze({
     BATCH: 'batch',
 });
 
+const MUTATION_REMOVE = Symbol('variableService.remove');
+const MUTATION_SKIP = Symbol('variableService.skip');
+
 const PRIMITIVE_TYPES = new Set(['string', 'number', 'boolean']);
+
+const DEFAULT_MONITORING_OPTIONS = Object.freeze({
+    enabled: false,
+    logIntervalMs: 15000,
+    topEventTypes: 5,
+});
+
+function normalizeMonitoringOptions(input) {
+    const normalized = { ...DEFAULT_MONITORING_OPTIONS };
+    if (!input || typeof input !== 'object') {
+        return normalized;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(input, 'enabled')) {
+        normalized.enabled = Boolean(input.enabled);
+    }
+
+    if (Object.prototype.hasOwnProperty.call(input, 'logIntervalMs')) {
+        const interval = Number(input.logIntervalMs);
+        if (!Number.isNaN(interval) && interval >= 1000) {
+            normalized.logIntervalMs = interval;
+        }
+    }
+
+    if (Object.prototype.hasOwnProperty.call(input, 'topEventTypes')) {
+        const topCount = Math.max(1, Number(input.topEventTypes) || DEFAULT_MONITORING_OPTIONS.topEventTypes);
+        normalized.topEventTypes = topCount;
+    }
+
+    return normalized;
+}
 
 /**
  * @param {any} value
@@ -451,6 +485,7 @@ function diffSnapshot(previous, next) {
  * @property {(options: Record<string, any>) => { store: Record<string, any>, scriptId: string }} [getScriptStore]
  * @property {(context: { scriptId: string }) => void} [persistScriptVariables]
  * @property {() => Record<string, Record<string, any>>} [listScriptStores]
+ * @property {() => Partial<{ enabled: boolean, logIntervalMs: number, topEventTypes: number }>} [getVariableMonitoringConfig]
  */
 
 /**
@@ -466,6 +501,85 @@ function createVariableService(config) {
     const pendingEvents = new Map();
     let flushScheduled = false;
     let lastSnapshot = null;
+
+    // 变量监控状态，用于在 toggle 打开时输出订阅数与事件吞吐量。
+    const monitoringState = {
+        activeSubscribers: 0,
+        totalEvents: 0,
+        totalSinceFlush: 0,
+        typeCounts: new Map(),
+    };
+    let monitoringTimer = null;
+
+    const getMonitoringOptions = () => normalizeMonitoringOptions(
+        typeof config.getVariableMonitoringConfig === 'function'
+            ? config.getVariableMonitoringConfig()
+            : undefined,
+    );
+
+    const cancelMonitoringTimer = () => {
+        if (monitoringTimer) {
+            clearTimeout(monitoringTimer);
+            monitoringTimer = null;
+        }
+    };
+
+    const scheduleMonitoringFlush = () => {
+        const options = getMonitoringOptions();
+        if (!options.enabled) {
+            cancelMonitoringTimer();
+            monitoringState.typeCounts.clear();
+            monitoringState.totalSinceFlush = 0;
+            return;
+        }
+        if (monitoringTimer) {
+            return;
+        }
+        monitoringTimer = setTimeout(() => {
+            monitoringTimer = null;
+            flushMonitoring();
+        }, options.logIntervalMs);
+    };
+
+    const flushMonitoring = () => {
+        const options = getMonitoringOptions();
+        if (!options.enabled) {
+            cancelMonitoringTimer();
+            monitoringState.typeCounts.clear();
+            monitoringState.totalSinceFlush = 0;
+            return;
+        }
+
+        const topEvents = Array.from(monitoringState.typeCounts.entries())
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, Math.max(1, options.topEventTypes))
+            .map(([type, count]) => ({ type, count }));
+
+        console.info('[VariableService][monitor]', {
+            activeSubscribers: monitoringState.activeSubscribers,
+            pendingEvents: pendingEvents.size,
+            totalEvents: monitoringState.totalEvents,
+            eventsSinceLast: monitoringState.totalSinceFlush,
+            topEvents,
+        });
+        monitoringState.totalSinceFlush = 0;
+        monitoringState.typeCounts.clear();
+        scheduleMonitoringFlush();
+    };
+
+    const recordMonitoringEvent = (eventType) => {
+        const options = getMonitoringOptions();
+        if (!options.enabled) {
+            return;
+        }
+        monitoringState.totalEvents += 1;
+        monitoringState.totalSinceFlush += 1;
+        monitoringState.typeCounts.set(
+            eventType,
+            (monitoringState.typeCounts.get(eventType) || 0) + 1,
+        );
+        scheduleMonitoringFlush();
+    };
 
     const scheduleTask = (() => {
         if (typeof queueMicrotask === 'function') {
@@ -544,6 +658,29 @@ function createVariableService(config) {
         const characterId = event.characterId ?? '';
         const scriptId = event.scriptId ?? '';
         return `${event.scope}:${characterId}:${scriptId}:${messageId}:${swipeId}:${event.key}`;
+    };
+
+    const getInternal = (scope, key, options = {}) => {
+        let store;
+        if (scope === VARIABLE_SCOPE.MESSAGE) {
+            store = ensureMessageStore(options).store;
+        } else if (scope === VARIABLE_SCOPE.CHAT) {
+            store = ensureChatStore();
+        } else if (scope === VARIABLE_SCOPE.GLOBAL) {
+            store = ensureGlobalStore();
+        } else if (scope === VARIABLE_SCOPE.CHARACTER) {
+            store = ensureCharacterStore(options).store;
+        } else if (scope === VARIABLE_SCOPE.SCRIPT) {
+            store = ensureScriptStore(options).store;
+        } else {
+            throw new Error(`未知的变量作用域：${scope}`);
+        }
+
+        const value = store[key];
+        if (options.clone === false) {
+            return value;
+        }
+        return value === undefined ? undefined : cloneValue(value);
     };
 
     const enqueueEvent = (event) => {
@@ -751,6 +888,8 @@ function createVariableService(config) {
             enumerable: true,
         });
 
+        recordMonitoringEvent(event.type);
+
         for (const subscriber of subscribers) {
             try {
                 const result = subscriber(event);
@@ -879,40 +1018,59 @@ function createVariableService(config) {
         return true;
     };
 
+    const mutateInternal = (scope, key, mutator, options = {}) => {
+        if (typeof mutator !== 'function') {
+            throw new Error('变量变换回调必须是函数');
+        }
+
+        const previous = getInternal(scope, key, { ...options, clone: true });
+        const draft = previous === undefined ? undefined : cloneValue(previous);
+        const context = { exists: previous !== undefined };
+
+        let result;
+        try {
+            result = mutator(draft, context);
+        } catch (error) {
+            console.error('[VariableService] mutate 回调执行失败', error);
+            throw error;
+        }
+
+        if (result === MUTATION_SKIP) {
+            return previous;
+        }
+
+        if (result === MUTATION_REMOVE) {
+            removeInternal(scope, key, options, false);
+            return undefined;
+        }
+
+        const nextValue = result === undefined ? draft : result;
+        if (nextValue === undefined) {
+            removeInternal(scope, key, options, false);
+            return undefined;
+        }
+
+        return setInternal(scope, key, nextValue, options, false);
+    };
+
     const api = {
         subscribe: (subscriber) => {
             if (typeof subscriber !== 'function') {
                 throw new Error('订阅回调必须是函数');
             }
             subscribers.add(subscriber);
+            monitoringState.activeSubscribers = subscribers.size;
+            scheduleMonitoringFlush();
             return () => {
                 subscribers.delete(subscriber);
+                monitoringState.activeSubscribers = subscribers.size;
+                scheduleMonitoringFlush();
             };
         },
-        get: (scope, key, options = {}) => {
-            let store;
-            if (scope === VARIABLE_SCOPE.MESSAGE) {
-                store = ensureMessageStore(options).store;
-            } else if (scope === VARIABLE_SCOPE.CHAT) {
-                store = ensureChatStore();
-            } else if (scope === VARIABLE_SCOPE.GLOBAL) {
-                store = ensureGlobalStore();
-            } else if (scope === VARIABLE_SCOPE.CHARACTER) {
-                store = ensureCharacterStore(options).store;
-            } else if (scope === VARIABLE_SCOPE.SCRIPT) {
-                store = ensureScriptStore(options).store;
-            } else {
-                throw new Error(`未知的变量作用域：${scope}`);
-            }
-
-            const value = store[key];
-            if (options.clone === false) {
-                return value;
-            }
-            return value === undefined ? undefined : cloneValue(value);
-        },
+        get: (scope, key, options = {}) => getInternal(scope, key, options),
         set: (scope, key, value, options = {}) => setInternal(scope, key, value, options, false),
         remove: (scope, key, options = {}) => removeInternal(scope, key, options, false),
+        mutate: (scope, key, mutator, options = {}) => mutateInternal(scope, key, mutator, options),
         transaction: async (scope, callback, options = {}) => {
             if (typeof callback !== 'function') {
                 throw new Error('事务回调必须是函数');
@@ -1049,9 +1207,30 @@ function createVariableService(config) {
 
             return snapshot;
         },
+        refreshMonitoringConfig: () => {
+            const options = getMonitoringOptions();
+            if (options.enabled) {
+                scheduleMonitoringFlush();
+            } else {
+                cancelMonitoringTimer();
+                monitoringState.typeCounts.clear();
+                monitoringState.totalSinceFlush = 0;
+            }
+        },
+        getMonitoringSnapshot: () => ({
+            activeSubscribers: monitoringState.activeSubscribers,
+            pendingEvents: pendingEvents.size,
+            totalEvents: monitoringState.totalEvents,
+            eventsSinceLast: monitoringState.totalSinceFlush,
+            topEvents: Array.from(monitoringState.typeCounts.entries())
+                .sort((a, b) => b[1] - a[1])
+                .map(([type, count]) => ({ type, count })),
+            timerArmed: Boolean(monitoringTimer),
+            options: getMonitoringOptions(),
+        }),
     };
 
     return Object.freeze(api);
 }
 
-export { VARIABLE_SCOPE, VARIABLE_EVENTS, createVariableService };
+export { VARIABLE_SCOPE, VARIABLE_EVENTS, MUTATION_REMOVE, MUTATION_SKIP, createVariableService };

@@ -28,6 +28,12 @@ const DEFAULT_DEBUG_LOGGING = {
     generation: false,
 };
 
+const DEFAULT_VARIABLE_MONITORING = {
+    enabled: false,
+    logIntervalMs: 15000,
+    topEventTypes: 5,
+};
+
 let cachedConfig = null;
 
 function normalizeApiToggles(rawToggles = {}) {
@@ -69,6 +75,31 @@ function normalizeDebugLogging(rawLogging = {}) {
     return normalized;
 }
 
+function normalizeVariableMonitoring(rawConfig = {}) {
+    const normalized = { ...DEFAULT_VARIABLE_MONITORING };
+    if (!rawConfig || typeof rawConfig !== 'object') {
+        return normalized;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(rawConfig, 'enabled')) {
+        normalized.enabled = Boolean(rawConfig.enabled);
+    }
+
+    if (Object.prototype.hasOwnProperty.call(rawConfig, 'logIntervalMs')) {
+        const interval = Number(rawConfig.logIntervalMs);
+        if (!Number.isNaN(interval) && interval >= 1000) {
+            normalized.logIntervalMs = interval;
+        }
+    }
+
+    if (Object.prototype.hasOwnProperty.call(rawConfig, 'topEventTypes')) {
+        const topCount = Math.max(1, Number(rawConfig.topEventTypes) || DEFAULT_VARIABLE_MONITORING.topEventTypes);
+        normalized.topEventTypes = topCount;
+    }
+
+    return normalized;
+}
+
 function loadConfigFile() {
     if (cachedConfig) {
         return cachedConfig;
@@ -84,6 +115,7 @@ function loadConfigFile() {
             apiToggleLogging: Boolean(parsed?.apiToggleLogging ?? parsed?.api_toggle_logging ?? DEFAULT_API_LOGGING),
             extensionToastNotifications: normalizeOptionalBoolean(toastValue, DEFAULT_EXTENSION_TOASTS),
             debugLogging: normalizeDebugLogging(parsed?.debugLogging || parsed?.debug_logging || {}),
+            variableMonitoring: normalizeVariableMonitoring(parsed?.variableMonitoring || parsed?.variable_monitoring || {}),
         };
     } catch (error) {
         cachedConfig = {
@@ -91,6 +123,7 @@ function loadConfigFile() {
             apiToggleLogging: DEFAULT_API_LOGGING,
             extensionToastNotifications: DEFAULT_EXTENSION_TOASTS,
             debugLogging: { ...DEFAULT_DEBUG_LOGGING },
+            variableMonitoring: { ...DEFAULT_VARIABLE_MONITORING },
         };
     }
 
@@ -121,4 +154,8 @@ export function getExtensionToastNotifications() {
 
 export function getDebugLoggingConfig() {
     return { ...loadConfigFile().debugLogging };
+}
+
+export function getVariableMonitoringConfig() {
+    return { ...loadConfigFile().variableMonitoring };
 }

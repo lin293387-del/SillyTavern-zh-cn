@@ -70,7 +70,7 @@ import { diskCache } from './endpoints/characters.js';
 import { migrateFlatSecrets } from './endpoints/secrets.js';
 import { metricsRouter } from './metrics/index.js';
 import { createTaskQueue } from './queues/index.js';
-import { getAllApiToggles, getApiToggleLogging, getExtensionToastNotifications, getDebugLoggingConfig } from './config-json.js';
+import { getAllApiToggles, getApiToggleLogging, getExtensionToastNotifications, getDebugLoggingConfig, getVariableMonitoringConfig } from './config-json.js';
 import { registerImportProcessors } from './services/import-processor.js';
 
 // Work around a node v20.0.0, v20.1.0, and v20.2.0 bug. The issue was fixed in v20.3.0.
@@ -290,6 +290,7 @@ app.get('/api/meta/api-toggles', (_req, res) => {
         loggingEnabled: getApiToggleLogging(),
         extensionToastsEnabled: getExtensionToastNotifications(),
         debugLogging: getDebugLoggingConfig(),
+        variableMonitoring: getVariableMonitoringConfig(),
     });
 });
 

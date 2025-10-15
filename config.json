@@ -23,5 +23,11 @@
     "window": false,
     "renderQueue": false,
     "generation": false
+  },
+  "_commentVariableMonitoring": "variableMonitoring 控制变量服务监控（enabled：开关；logIntervalMs：日志间隔毫秒；topEventTypes：统计前 N 个事件类型）。",
+  "variableMonitoring": {
+    "enabled": false,
+    "logIntervalMs": 15000,
+    "topEventTypes": 5
   }
 }

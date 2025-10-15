@@ -295,13 +295,11 @@ SillyTavern.extensions.ui.showToast('success', '扩展初始化完成');
 
 ## 12. 变量与设置
 
-- `variables.getPowerUser()` / `variables.updatePowerUser(updater)`：读取或更新 `power_user`，自动应用样式并保存。
-- `variables.getSettings()` / `variables.updateSettings(updater)`：读取或更新全局设置，自动调用 `saveSettings` 并广播 `SETTINGS_UPDATED`。
-- `variables.mainApi`：只读访问当前主 API。
-- `variables.onSettingsUpdated(handler)`：监听设置变更事件。
-- 变量作用域支持 `message` / `chat` / `global` 之外的 `character` 与 `script`，事件会附带 `characterId`、`scriptId` 等标识，角色变量存储在当前角色数据扩展区，脚本变量归档于 `extension_settings.variables.scripts`。
-- 新增 Promise 工具：`variables.replaceVariables()`、`variables.updateVariablesWith()`、`variables.insertOrAssignVariables()`、`variables.insertVariables()`、`variables.deleteVariable()`，便于扩展一次性替换、增量合并或按路径删除变量。
-- `variables.snapshot()` 现支持 `{ incremental, track }` 选项，可按需获取差分快照并控制是否更新内部基准。
+- 基础常量：`variables.scopes`、`variables.signals`、`variables.mutations`（含 `skip` / `remove`）分别映射 `VARIABLE_SCOPE`、事件类型以及 `variableService.mutate` 的特殊返回值。
+- 基础操作：`variables.get/set/remove/transaction/mutate(scope, key, value|mutator, options)` 与 `variables.message/chat/global/character/script` 五个作用域对象提供同名便捷方法；`mutate` 会自动构造数组或字典并保留事务差分信息。`variables.subscribe(handler)` / `variables.watch(handler)` 可订阅变量事件，返回的 disposer 与事件桥接保持一致。
+- 快照与监控：`variables.snapshot(options)` 支持 `{ incremental, track }`，用于差分快照；`variables.getMonitoringSnapshot()` / `variables.refreshMonitoringConfig()` 读取或刷新运行期监控统计（需在 `config.json` 中开启 `variableMonitoring` 开关）。
+- 设置读写：`variables.getPowerUser()` / `variables.updatePowerUser(updater)`、`variables.getSettings()` / `variables.updateSettings(updater)`、`variables.mainApi` 与 `variables.onSettingsUpdated(handler)` 保持原有行为，更新时会自动持久化并广播 `SETTINGS_UPDATED`。
+- Promise 工具：`variables.replaceVariables()`、`variables.updateVariablesWith()`、`variables.insertOrAssignVariables()`、`variables.insertVariables()`、`variables.deleteVariable()` 用于一次性替换、增量合并或路径删除，事件广播会附带 `characterId` / `scriptId` 等上下文，便于扩展区分来源。
 
 ```javascript
 await SillyTavern.extensions.variables.updatePowerUser((draft) => {
@@ -320,6 +318,19 @@ await SillyTavern.extensions.variables.insertOrAssignVariables(
 // 读取差分快照（不更新内部基准）
 const diff = SillyTavern.extensions.variables.snapshot({ incremental: true, track: false });
 console.debug(diff.script?.['my-extension-script']);
+
+// 使用 mutate 在 Chat 作用域内原子级更新会话统计
+await SillyTavern.extensions.variables.mutate(
+  SillyTavern.extensions.variables.scopes.CHAT,
+  'sessionStats',
+  (draft = { turns: 0 }) => {
+    draft.turns += 1;
+    return draft;
+  },
+);
+
+// 读取变量监控快照（需在 config.json 开启 variableMonitoring）
+console.table(SillyTavern.extensions.variables.getMonitoringSnapshot().topEvents);
 ```
 
 ## 13. 统一错误码

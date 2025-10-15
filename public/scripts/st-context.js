@@ -81,7 +81,7 @@ import { tag_map, tags } from './tags.js';
 import { getTextGenServer, textgenerationwebui_settings } from './textgen-settings.js';
 import { tokenizers, getTextTokens, getTokenCount, getTokenCountAsync, getTokenizerModel } from './tokenizers.js';
 import { ToolManager } from './tool-calling.js';
-import { VARIABLE_SCOPE, VARIABLE_EVENTS } from './variable-service.js';
+import { VARIABLE_SCOPE, VARIABLE_EVENTS, MUTATION_REMOVE, MUTATION_SKIP } from './variable-service.js';
 import { accountStorage } from './util/AccountStorage.js';
 import { timestampToMoment, uuidv4 } from './utils.js';
 import { getGlobalVariable, getLocalVariable, setGlobalVariable, setLocalVariable } from './variables.js';
@@ -209,26 +209,36 @@ export function getContext() {
             service: variableService,
             scopes: VARIABLE_SCOPE,
             signals: VARIABLE_EVENTS,
+            mutations: Object.freeze({
+                skip: MUTATION_SKIP,
+                remove: MUTATION_REMOVE,
+            }),
             store: {
                 message: Object.freeze({
                     get: (key, options = {}) => variableService.get(VARIABLE_SCOPE.MESSAGE, key, options),
                     set: (key, value, options = {}) => variableService.set(VARIABLE_SCOPE.MESSAGE, key, value, options),
+                    mutate: (key, mutator, options = {}) => variableService.mutate(VARIABLE_SCOPE.MESSAGE, key, mutator, options),
                     remove: (key, options = {}) => variableService.remove(VARIABLE_SCOPE.MESSAGE, key, options),
                     transaction: (callback, options = {}) => variableService.transaction(VARIABLE_SCOPE.MESSAGE, callback, options),
                 }),
                 chat: Object.freeze({
                     get: (key, options = {}) => variableService.get(VARIABLE_SCOPE.CHAT, key, options),
                     set: (key, value, options = {}) => variableService.set(VARIABLE_SCOPE.CHAT, key, value, options),
+                    mutate: (key, mutator, options = {}) => variableService.mutate(VARIABLE_SCOPE.CHAT, key, mutator, options),
                     remove: (key, options = {}) => variableService.remove(VARIABLE_SCOPE.CHAT, key, options),
                     transaction: (callback, options = {}) => variableService.transaction(VARIABLE_SCOPE.CHAT, callback, options),
                 }),
                 global: Object.freeze({
                     get: (key, options = {}) => variableService.get(VARIABLE_SCOPE.GLOBAL, key, options),
                     set: (key, value, options = {}) => variableService.set(VARIABLE_SCOPE.GLOBAL, key, value, options),
+                    mutate: (key, mutator, options = {}) => variableService.mutate(VARIABLE_SCOPE.GLOBAL, key, mutator, options),
                     remove: (key, options = {}) => variableService.remove(VARIABLE_SCOPE.GLOBAL, key, options),
                     transaction: (callback, options = {}) => variableService.transaction(VARIABLE_SCOPE.GLOBAL, callback, options),
                 }),
             },
+            mutate: (scope, key, mutator, options = {}) => variableService.mutate(scope, key, mutator, options),
+            getMonitoringSnapshot: () => variableService.getMonitoringSnapshot(),
+            refreshMonitoringConfig: () => variableService.refreshMonitoringConfig(),
             local: {
                 get: getLocalVariable,
                 set: setLocalVariable,

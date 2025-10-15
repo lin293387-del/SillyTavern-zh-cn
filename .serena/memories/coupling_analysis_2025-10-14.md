@@ -34,5 +34,3 @@
 - 服务端 JSON 限额/中间件：优化请求限额或会话设置时需更新 `getConfigValue` 默认值并确认 CSRF、Session 中间件顺序不变，防止登录态或 API 调用失效。
 - 队列/导入：`importTaskQueue` 与 `registerImportProcessors` 需要在退出时 close；重构为外部消息队列时要保留 `app.set('queues:*')` 供路由/扩展获取。
 - 聊天备份：修改节流配置需确保 `process.on('exit')` flush，以及 `removeOldBackups` 行为不被破坏。
-
-> 后续重构建议：优先在局部模块（如 `public/scripts/chat/` 子模块）引入 TypeScript 类型或单元测试，避免一次性触碰 `public/script.js` 主体；若要拆分主脚本，可先在扩展 SDK 层建立稳定接口以保护现有扩展。

@@ -20,6 +20,117 @@ import { isFalseBoolean, convertValueType, isTrueBoolean } from './utils.js';
 
 const MAX_LOOPS = 100;
 
+function ensureLegacyVariableStore(scope) {
+    if (scope === VARIABLE_SCOPE.CHAT) {
+        if (!chat_metadata.variables || typeof chat_metadata.variables !== 'object') {
+            chat_metadata.variables = {};
+        }
+        return chat_metadata.variables;
+    }
+
+    if (scope === VARIABLE_SCOPE.GLOBAL) {
+        if (!extension_settings.variables || typeof extension_settings.variables !== 'object') {
+            extension_settings.variables = { global: {}, scripts: {} };
+        }
+        if (!extension_settings.variables.global || typeof extension_settings.variables.global !== 'object') {
+            extension_settings.variables.global = {};
+        }
+        if (!extension_settings.variables.scripts || typeof extension_settings.variables.scripts !== 'object') {
+            extension_settings.variables.scripts = {};
+        }
+        return extension_settings.variables.global;
+    }
+
+    return {};
+}
+
+/**
+ * @param {any} draft
+ * @param {boolean} numeric
+ * @returns {Record<string, any>|any[]}
+ */
+function coerceIndexedContainer(draft, numeric) {
+    if (draft === null || draft === undefined) {
+        return numeric ? [] : {};
+    }
+
+    if (typeof draft === 'string') {
+        try {
+            const parsed = JSON.parse(draft);
+            if (parsed !== null && typeof parsed === 'object') {
+                if (numeric) {
+                    if (Array.isArray(parsed)) {
+                        return parsed;
+                    }
+                    if (typeof parsed === 'object') {
+                        return parsed;
+                    }
+                    return [];
+                }
+                return Array.isArray(parsed) ? {} : parsed;
+            }
+            return numeric ? [] : {};
+        } catch {
+            return numeric ? [] : {};
+        }
+    }
+
+    if (numeric) {
+        if (Array.isArray(draft)) {
+            return draft;
+        }
+        if (typeof draft === 'object' && draft !== null) {
+            return draft;
+        }
+        return [];
+    }
+
+    if (typeof draft === 'object' && !Array.isArray(draft)) {
+        return draft;
+    }
+
+    return {};
+}
+
+/**
+ * @param {'chat'|'global'} scope
+ * @param {string} name
+ * @param {string|number} rawIndex
+ * @param {any} value
+ * @param {object} args
+ */
+function writeIndexedVariable(scope, name, rawIndex, value, args = {}) {
+    const numericIndex = Number(rawIndex);
+    const isNumeric = !Number.isNaN(numericIndex);
+    const targetKey = isNumeric ? numericIndex : rawIndex;
+    const converted = args.as !== undefined ? convertValueType(value, args.as) : value;
+
+    try {
+        variableService.mutate(scope, name, (draft) => {
+            const container = coerceIndexedContainer(draft, isNumeric);
+            if (isNumeric) {
+                container[targetKey] = converted;
+            } else if (typeof targetKey === 'string' && targetKey.length) {
+                container[targetKey] = converted;
+            }
+            return container;
+        });
+        return;
+    } catch (error) {
+        console.debug('[variables] 变量索引写入回退为旧逻辑', error);
+    }
+
+    const legacyStore = ensureLegacyVariableStore(scope);
+    const current = legacyStore[name];
+    let container = coerceIndexedContainer(current, isNumeric);
+    if (isNumeric) {
+        container[targetKey] = converted;
+    } else if (typeof targetKey === 'string' && targetKey.length) {
+        container[targetKey] = converted;
+    }
+    legacyStore[name] = container;
+}
+
 export function getLocalVariable(name, args = {}) {
     if (!chat_metadata.variables || typeof chat_metadata.variables !== 'object') {
         chat_metadata.variables = {};
@@ -53,6 +164,14 @@ export function getLocalVariable(name, args = {}) {
         }
     }
 
+    if (Array.isArray(localVariable) || (localVariable && typeof localVariable === 'object')) {
+        try {
+            return JSON.stringify(localVariable);
+        } catch {
+            return localVariable;
+        }
+    }
+
     return (localVariable?.trim?.() === '' || isNaN(Number(localVariable))) ? (localVariable ?? '') : Number(localVariable);
 }
 
@@ -66,30 +185,15 @@ export function setLocalVariable(name, value, args = {}) {
     }
 
     if (args.index !== undefined) {
-        try {
-            const currentRaw = variableService.get(VARIABLE_SCOPE.CHAT, name, { clone: true });
-            const serialized = typeof currentRaw === 'string'
-                ? currentRaw
-                : JSON.stringify(currentRaw ?? null);
-            let localVariable = JSON.parse(serialized ?? 'null');
-            const numIndex = Number(args.index);
-            if (Number.isNaN(numIndex)) {
-                if (localVariable === null) {
-                    localVariable = {};
-                }
-                localVariable[args.index] = convertValueType(value, args.as);
-            } else {
-                if (localVariable === null) {
-                    localVariable = [];
-                }
-                localVariable[numIndex] = convertValueType(value, args.as);
-            }
-            variableService.set(VARIABLE_SCOPE.CHAT, name, JSON.stringify(localVariable));
-        } catch {
-            // silent fallback
-        }
+        writeIndexedVariable(VARIABLE_SCOPE.CHAT, name, args.index, value, args);
     } else {
-        variableService.set(VARIABLE_SCOPE.CHAT, name, value);
+        try {
+            variableService.set(VARIABLE_SCOPE.CHAT, name, value);
+        } catch (error) {
+            console.debug('[variables] 本地变量写入回退为旧逻辑', error);
+            const store = ensureLegacyVariableStore(VARIABLE_SCOPE.CHAT);
+            store[name] = value;
+        }
     }
 
     return value;
@@ -124,6 +228,14 @@ export function getGlobalVariable(name, args = {}) {
         }
     }
 
+    if (Array.isArray(globalVariable) || (globalVariable && typeof globalVariable === 'object')) {
+        try {
+            return JSON.stringify(globalVariable);
+        } catch {
+            return globalVariable;
+        }
+    }
+
     return (globalVariable?.trim?.() === '' || isNaN(Number(globalVariable))) ? (globalVariable ?? '') : Number(globalVariable);
 }
 
@@ -133,30 +245,15 @@ export function setGlobalVariable(name, value, args = {}) {
     }
 
     if (args.index !== undefined) {
-        try {
-            const currentRaw = variableService.get(VARIABLE_SCOPE.GLOBAL, name, { clone: true });
-            const serialized = typeof currentRaw === 'string'
-                ? currentRaw
-                : JSON.stringify(currentRaw ?? null);
-            let globalVariable = JSON.parse(serialized ?? 'null');
-            const numIndex = Number(args.index);
-            if (Number.isNaN(numIndex)) {
-                if (globalVariable === null) {
-                    globalVariable = {};
-                }
-                globalVariable[args.index] = convertValueType(value, args.as);
-            } else {
-                if (globalVariable === null) {
-                    globalVariable = [];
-                }
-                globalVariable[numIndex] = convertValueType(value, args.as);
-            }
-            variableService.set(VARIABLE_SCOPE.GLOBAL, name, JSON.stringify(globalVariable));
-        } catch {
-            // silent fallback
-        }
+        writeIndexedVariable(VARIABLE_SCOPE.GLOBAL, name, args.index, value, args);
     } else {
-        variableService.set(VARIABLE_SCOPE.GLOBAL, name, value);
+        try {
+            variableService.set(VARIABLE_SCOPE.GLOBAL, name, value);
+        } catch (error) {
+            console.debug('[variables] 全局变量写入回退为旧逻辑', error);
+            const store = ensureLegacyVariableStore(VARIABLE_SCOPE.GLOBAL);
+            store[name] = value;
+        }
     }
 
     return value;
