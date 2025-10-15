@@ -359,7 +359,7 @@
     "Enter it in the box below": "在下面的框中输入",
     "Novel AI Model": "Novel AI 模型",
     "No connection...": "无连接...",
-    "Invalid endpoint URL. Requests may fail.": "API链接无效，请确保填写正确",
+    "Invalid endpoint URL. Requests may fail.": "URL链接无效，请确保填写正确",
     "API Type": "API 类型",
     "Generic (OpenAI-compatible) [LM Studio, LiteLLM, etc.]": "通用（兼容 OpenAI）[LM Studio、LiteLLM 等]",
     "TogetherAI API Key": "TogetherAI API 密钥",
