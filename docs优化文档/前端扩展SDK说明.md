@@ -331,6 +331,46 @@ await SillyTavern.extensions.variables.mutate(
 
 // 读取变量监控快照（需在 config.json 开启 variableMonitoring）
 console.table(SillyTavern.extensions.variables.getMonitoringSnapshot().topEvents);
+
+// ===== 常见实战示例 =====
+
+// 1. 消息作用域：为当前消息标记扩展状态（支持多滑）
+await SillyTavern.extensions.variables.mutate(
+  SillyTavern.extensions.variables.scopes.MESSAGE,
+  'myExtensionState',
+  (draft = {}) => {
+    draft[SillyTavern.extensions.chat.getSnapshot().virtualization.cursor] = {
+      lastUpdatedAt: Date.now(),
+      summary: '已标记为隐藏提醒',
+    };
+    return draft;
+  },
+  { messageId: 'latest' }, // 支持 messageId/swipeId
+);
+
+// 2. 聊天作用域：在会话层面缓存扩展配置
+await SillyTavern.extensions.variables.chat.mutate('myExtensionConfig', (draft = {}) => {
+  draft.theme = 'dark';
+  draft.autoPin = true;
+  draft.updatedAt = Date.now();
+  return draft;
+});
+
+const chatConfig = SillyTavern.extensions.variables.chat.get('myExtensionConfig', { clone: true });
+console.debug('Chat config snapshot', chatConfig);
+
+// 3. 角色作用域：为当前角色记忆扩展偏好（跨会话持久化）
+await SillyTavern.extensions.variables.character.mutate('myExtensionPreferences', (draft = {}) => {
+  draft.voice = 'serious';
+  draft.background = 'space station';
+  return draft;
+}, { characterId: SillyTavern.extensions.chat.getSnapshot().chat?.characterId });
+
+const characterPrefs = SillyTavern.extensions.variables.character.get('myExtensionPreferences', {
+  characterId: SillyTavern.extensions.chat.getSnapshot().chat?.characterId,
+  clone: true,
+});
+console.debug('Character preferences', characterPrefs);
 ```
 
 ## 13. 统一错误码
