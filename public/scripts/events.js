@@ -50,6 +50,7 @@ export const event_types = {
     CHARACTER_GROUP_OVERLAY_STATE_CHANGE_BEFORE: 'character_group_overlay_state_change_before',
     CHARACTER_GROUP_OVERLAY_STATE_CHANGE_AFTER: 'character_group_overlay_state_change_after',
     USER_MESSAGE_RENDERED: 'user_message_rendered',
+    USER_AVATAR_UPDATED: 'user_avatar_updated',
     CHARACTER_MESSAGE_RENDERED: 'character_message_rendered',
     FORCE_SET_BACKGROUND: 'force_set_background',
     CHAT_DELETED: 'chat_deleted',

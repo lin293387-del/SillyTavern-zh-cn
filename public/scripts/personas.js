@@ -98,6 +98,9 @@ export function initUserAvatar(avatar) {
     user_avatar = avatar;
     reloadUserAvatar();
     updatePersonaUIStates();
+    void eventSource.emit(event_types.USER_AVATAR_UPDATED, { avatar: user_avatar }).catch((error) => {
+        console.error('[personas] 通知用户头像更新失败', error);
+    });
 }
 
 /**
@@ -115,6 +118,9 @@ export function setUserAvatar(imgfile, { toastPersonaNameChange = true, navigate
     retriggerFirstMessageOnEmptyChat();
     saveSettingsDebounced();
     $('.zoomed_avatar[forchar]').remove();
+    void eventSource.emit(event_types.USER_AVATAR_UPDATED, { avatar: user_avatar }).catch((error) => {
+        console.error('[personas] 通知用户头像更新失败', error);
+    });
 }
 
 function reloadUserAvatar(force = false) {
@@ -125,7 +131,13 @@ function reloadUserAvatar(force = false) {
         }
 
         if ($(this).attr('is_user') == 'true' && $(this).attr('force_avatar') == 'false') {
-            avatarImg.attr('src', getThumbnailUrl('persona', user_avatar));
+            const personaId = typeof user_avatar === 'string' && user_avatar.length ? user_avatar : null;
+            const resolvedSrc = personaId ? getThumbnailUrl('persona', personaId) : default_user_avatar;
+            avatarImg.attr('src', resolvedSrc);
+            avatarImg.attr('data-avatar-src', resolvedSrc);
+            avatarImg.attr('data-original-src', resolvedSrc);
+            avatarImg.show();
+            avatarImg.siblings('.missing-avatar').remove();
         }
     });
 }

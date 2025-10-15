@@ -198,6 +198,7 @@ import {
 } from './scripts/horde.js';
 
 import {
+    cancelDebounce,
     debounce,
     delay,
     trimToEndSentence,
@@ -393,6 +394,40 @@ export {
     scheduleLowPriorityTask,
 };
 
+/**
+ * @typedef {Object} ManagedEventListenerOptions
+ * @property {boolean} [capture]
+ * @property {boolean} [once]
+ * @property {boolean|'auto'} [passive]
+ * @property {AbortSignal} [signal]
+ * @property {number|boolean} [throttle]
+ * @property {{ leading?: boolean, trailing?: boolean }} [throttleOptions]
+ * @property {number|boolean} [debounce]
+ * @property {'animation'|'raf'|'idle'|'microtask'|'sync'} [defer]
+ * @property {'user-blocking'|'user-visible'|'background'} [priority]
+ * @property {boolean} [optimized]
+ * @property {(event: Event) => boolean} [predicate]
+ * @property {(event: Event) => boolean} [filter]
+ * @property {boolean} [passiveFallback]
+ * @property {Record<string, any>} [dom]
+ * @property {number|boolean} [throttleMs]
+ * @property {number|boolean} [debounceMs]
+ * @property {'animation'|'raf'|'idle'|'microtask'|'sync'} [frame]
+ * @property {'user-blocking'|'user-visible'|'background'} [schedulerPriority]
+ */
+
+/**
+ * @typedef {Object} ManagedEventRuntimeOptions
+ * @property {number|null} throttle
+ * @property {{ leading?: boolean, trailing?: boolean }|undefined} throttleOptions
+ * @property {number|null} debounce
+ * @property {'animation'|'raf'|'idle'|'microtask'|'sync'|undefined} defer
+ * @property {'user-blocking'|'user-visible'|'background'|undefined} priority
+ * @property {(event: Event) => boolean|undefined} predicate
+ * @property {boolean} passiveFallback
+ * @property {boolean} optimized
+ */
+
 const DEFAULT_PASSIVE_EVENT_TYPES = new Set([
     'wheel',
     'mousewheel',
@@ -407,37 +442,422 @@ const DEFAULT_PASSIVE_EVENT_TYPES = new Set([
     'scroll',
 ]);
 
-function normalizeEventListenerOptions(eventType, options) {
+const MANAGED_EVENT_BEHAVIORS = new Map([
+    ['scroll', { throttle: 32, defer: 'animation' }],
+    ['wheel', { throttle: 24, defer: 'animation' }],
+    ['touchmove', { throttle: 24, defer: 'animation' }],
+    ['pointermove', { throttle: 24, defer: 'animation' }],
+    ['mousemove', { throttle: 24, defer: 'animation' }],
+]);
+
+const queueAsyncTask = typeof queueMicrotask === 'function'
+    ? queueMicrotask
+    : (callback) => Promise.resolve().then(callback).catch((error) => setTimeout(() => { throw error; }, 0));
+
+function isAbortSignalValue(value) {
+    return typeof AbortSignal !== 'undefined' && value instanceof AbortSignal;
+}
+
+/**
+ * @param {string} eventType
+ * @param {ManagedEventListenerOptions|boolean|undefined|null} options
+ * @returns {{ domOptions: AddEventListenerOptions|boolean|undefined, managed: ManagedEventListenerOptions }}
+ */
+function resolveManagedEventOptions(eventType, options) {
     const shouldBePassive = DEFAULT_PASSIVE_EVENT_TYPES.has(eventType);
+    const managed = {
+        optimized: true,
+        throttle: undefined,
+        throttleOptions: undefined,
+        debounce: undefined,
+        defer: undefined,
+        priority: undefined,
+        predicate: undefined,
+        passiveFallback: true,
+    };
 
     if (options === undefined || options === null) {
-        return shouldBePassive ? { passive: true } : undefined;
+        return {
+            domOptions: shouldBePassive ? { passive: true } : undefined,
+            managed,
+        };
     }
 
     if (typeof options === 'boolean') {
-        if (!shouldBePassive) {
-            return options;
-        }
-        return { capture: options, passive: true };
+        const domOptions = shouldBePassive ? { capture: options, passive: true } : options;
+        return { domOptions, managed };
     }
 
     if (typeof options === 'object') {
-        if (shouldBePassive && !Object.prototype.hasOwnProperty.call(options, 'passive')) {
-            return { ...options, passive: true };
+        const domOptions = options.dom && typeof options.dom === 'object' && options.dom !== null
+            ? { ...options.dom }
+            : {};
+
+        if (options.optimized === false) {
+            managed.optimized = false;
         }
-        return options;
+        if (options.passiveFallback === false) {
+            managed.passiveFallback = false;
+        }
+        if (typeof options.predicate === 'function') {
+            managed.predicate = options.predicate;
+        }
+        if (typeof options.filter === 'function') {
+            const existingPredicate = managed.predicate;
+            managed.predicate = existingPredicate
+                ? (event) => {
+                    try {
+                        return existingPredicate(event) && options.filter(event);
+                    } catch (error) {
+                        console.error('事件过滤器执行失败', error);
+                        return false;
+                    }
+                }
+                : options.filter;
+        }
+
+        if (typeof options.throttleOptions === 'object' && options.throttleOptions !== null) {
+            managed.throttleOptions = options.throttleOptions;
+        }
+
+        managed.throttle = options.throttle ?? options.throttleMs;
+        managed.debounce = options.debounce ?? options.debounceMs;
+        managed.defer = options.defer ?? options.frame;
+        managed.priority = options.priority ?? options.schedulerPriority;
+
+        if (Object.prototype.hasOwnProperty.call(options, 'capture')) {
+            domOptions.capture = Boolean(options.capture);
+        } else if (domOptions.capture !== undefined) {
+            domOptions.capture = Boolean(domOptions.capture);
+        }
+
+        if (Object.prototype.hasOwnProperty.call(options, 'once')) {
+            domOptions.once = Boolean(options.once);
+        } else if (domOptions.once !== undefined) {
+            domOptions.once = Boolean(domOptions.once);
+        }
+
+        if (Object.prototype.hasOwnProperty.call(options, 'signal')) {
+            domOptions.signal = isAbortSignalValue(options.signal) ? options.signal : undefined;
+        } else if (domOptions.signal !== undefined && !isAbortSignalValue(domOptions.signal)) {
+            delete domOptions.signal;
+        }
+
+        let passiveValue;
+        if (Object.prototype.hasOwnProperty.call(options, 'passive')) {
+            passiveValue = options.passive;
+        } else if (domOptions.passive !== undefined) {
+            passiveValue = domOptions.passive;
+        } else if (options.passiveMode === 'force') {
+            passiveValue = true;
+        }
+
+        if (passiveValue === 'auto') {
+            passiveValue = shouldBePassive;
+        }
+        if (passiveValue !== undefined) {
+            domOptions.passive = passiveValue;
+        } else if (shouldBePassive) {
+            domOptions.passive = true;
+        }
+
+        for (const key of Object.keys(domOptions)) {
+            if (domOptions[key] === undefined) {
+                delete domOptions[key];
+            }
+        }
+
+        const normalizedDom = Object.keys(domOptions).length
+            ? domOptions
+            : (shouldBePassive ? { passive: true } : undefined);
+
+        return { domOptions: normalizedDom, managed };
     }
 
-    return options;
+    return { domOptions: options, managed };
+}
+
+/**
+ * @param {number|boolean|undefined} value
+ * @param {number|undefined} fallback
+ * @returns {number|null}
+ */
+function normalizeNumericOption(value, fallback) {
+    if (value === undefined) {
+        return typeof fallback === 'number' && Number.isFinite(fallback) && fallback > 0 ? fallback : null;
+    }
+    if (value === false || value === null) {
+        return null;
+    }
+    if (value === true) {
+        return typeof fallback === 'number' && fallback > 0 ? fallback : null;
+    }
+    const numeric = Number(value);
+    if (Number.isFinite(numeric) && numeric > 0) {
+        return numeric;
+    }
+    return typeof fallback === 'number' && fallback > 0 ? fallback : null;
+}
+
+/**
+ * @param {string} eventType
+ * @param {ManagedEventListenerOptions} managed
+ * @returns {ManagedEventRuntimeOptions}
+ */
+function computeManagedRuntimeOptions(eventType, managed) {
+    const defaults = managed.optimized !== false
+        ? (MANAGED_EVENT_BEHAVIORS.get(eventType) ?? {})
+        : {};
+
+    const runtime = {
+        optimized: managed.optimized !== false,
+        throttle: normalizeNumericOption(managed.throttle, defaults.throttle),
+        throttleOptions: managed.throttleOptions ?? defaults.throttleOptions,
+        debounce: normalizeNumericOption(managed.debounce, defaults.debounce),
+        defer: managed.defer ?? defaults.defer,
+        priority: managed.priority ?? defaults.priority,
+        predicate: managed.predicate ?? defaults.predicate,
+        passiveFallback: managed.passiveFallback !== undefined
+            ? managed.passiveFallback
+            : (defaults.passiveFallback ?? true),
+    };
+
+    if (runtime.debounce) {
+        runtime.throttle = null;
+    }
+
+    return runtime;
+}
+
+/**
+ * @param {AddEventListenerOptions|boolean|undefined} domOptions
+ * @param {string} eventType
+ * @returns {boolean}
+ */
+function isPassiveEventOption(domOptions, eventType) {
+    if (domOptions === undefined || domOptions === null) {
+        return DEFAULT_PASSIVE_EVENT_TYPES.has(eventType);
+    }
+    if (typeof domOptions === 'boolean') {
+        return DEFAULT_PASSIVE_EVENT_TYPES.has(eventType);
+    }
+    if (typeof domOptions === 'object') {
+        if (Object.prototype.hasOwnProperty.call(domOptions, 'passive')) {
+            return Boolean(domOptions.passive);
+        }
+        return DEFAULT_PASSIVE_EVENT_TYPES.has(eventType);
+    }
+    return DEFAULT_PASSIVE_EVENT_TYPES.has(eventType);
+}
+
+/**
+ * @param {string} eventType
+ * @param {(event: Event) => any} listener
+ * @param {ManagedEventRuntimeOptions} runtime
+ * @returns {{ handler: (event: Event) => void, cleanup: () => void }}
+ */
+function createManagedListenerWrapper(eventType, listener, runtime) {
+    let wrapped = listener;
+    const cleanupTasks = [];
+
+    if (typeof runtime.predicate === 'function') {
+        const predicate = runtime.predicate;
+        const previous = wrapped;
+        wrapped = function (event) {
+            let allow = false;
+            try {
+                allow = predicate.call(this, event);
+            } catch (error) {
+                console.error('事件过滤器执行失败', eventType, error);
+                return;
+            }
+            if (!allow) {
+                return;
+            }
+            return previous.call(this, event);
+        };
+    }
+
+    if (runtime.debounce && runtime.debounce > 0) {
+        const previous = wrapped;
+        const debounced = debounce(function (event) {
+            return previous.call(this, event);
+        }, runtime.debounce);
+        wrapped = function (event) {
+            return debounced.call(this, event);
+        };
+        cleanupTasks.push(() => {
+            cancelDebounce(debounced);
+        });
+    } else if (runtime.throttle && runtime.throttle > 0) {
+        const previous = wrapped;
+        const throttled = throttle(function (event) {
+            return previous.call(this, event);
+        }, runtime.throttle, runtime.throttleOptions);
+        wrapped = function (event) {
+            return throttled.call(this, event);
+        };
+        cleanupTasks.push(() => {
+            if (typeof throttled.cancel === 'function') {
+                throttled.cancel();
+            }
+        });
+    }
+
+    if (runtime.defer === 'animation' || runtime.defer === 'raf') {
+        const previous = wrapped;
+        wrapped = function (event) {
+            const context = this;
+            if (typeof requestAnimationFrame === 'function') {
+                requestAnimationFrame(() => previous.call(context, event));
+            } else {
+                previous.call(context, event);
+            }
+        };
+    } else if (runtime.defer === 'idle') {
+        const previous = wrapped;
+        wrapped = function (event) {
+            scheduleLowPriorityTask(() => previous.call(this, event), { priority: runtime.priority ?? 'background' });
+        };
+    } else if (runtime.defer === 'microtask') {
+        const previous = wrapped;
+        wrapped = function (event) {
+            Promise.resolve().then(() => previous.call(this, event));
+        };
+    }
+
+    return {
+        handler: wrapped,
+        cleanup: () => {
+            for (const task of cleanupTasks) {
+                try {
+                    task?.();
+                } catch (error) {
+                    console.warn('事件监听清理失败', error);
+                }
+            }
+        },
+    };
+}
+
+/**
+ * @param {ManagedEventListenerOptions|boolean|undefined|null} options
+ * @param {ManagedEventRuntimeOptions} runtime
+ * @returns {ManagedEventListenerOptions}
+ */
+function normalizeFallbackOptions(options, runtime) {
+    if (typeof options === 'object' && options !== null) {
+        return { ...options, passive: false, passiveFallback: false };
+    }
+    const normalized = { passive: false, passiveFallback: false };
+    if (typeof options === 'boolean') {
+        normalized.capture = options;
+    }
+    if (runtime.optimized === false) {
+        normalized.optimized = false;
+    }
+    return normalized;
+}
+
+function internalAttach(target, eventType, listener, options, skipPassiveFallback, reattach, bindingRef) {
+    const { domOptions, managed } = resolveManagedEventOptions(eventType, options);
+    const runtime = computeManagedRuntimeOptions(eventType, managed);
+    const { handler: wrappedListener, cleanup } = createManagedListenerWrapper(eventType, listener, runtime);
+
+    const usePassiveGuard = runtime.passiveFallback && !skipPassiveFallback && isPassiveEventOption(domOptions, eventType);
+    let disposed = false;
+    let fallbackScheduled = false;
+
+    const eventHandler = usePassiveGuard
+        ? function (event) {
+            let prevented = false;
+            const originalPrevent = event.preventDefault;
+            event.preventDefault = function (...args) {
+                prevented = true;
+                return originalPrevent.apply(this, args);
+            };
+            try {
+                wrappedListener.call(this, event);
+            } finally {
+                event.preventDefault = originalPrevent;
+                if (prevented && event.cancelable && !fallbackScheduled) {
+                    fallbackScheduled = true;
+                    queueAsyncTask(() => {
+                        if (bindingRef.disposed) {
+                            return;
+                        }
+                        const nextOptions = normalizeFallbackOptions(options, runtime);
+                        reattach(nextOptions, true);
+                    });
+                }
+            }
+        }
+        : wrappedListener;
+
+    if (typeof domOptions === 'object' && domOptions?.signal && !isAbortSignalValue(domOptions.signal)) {
+        delete domOptions.signal;
+    }
+
+    if (typeof domOptions === 'object' && domOptions?.signal && domOptions.signal.aborted) {
+        cleanup();
+        return { dispose: () => {} };
+    }
+
+    try {
+        target.addEventListener(eventType, eventHandler, domOptions);
+    } catch (error) {
+        console.error('addManagedEventListener 注册失败', eventType, error);
+        cleanup();
+        return { dispose: () => {} };
+    }
+
+    if (typeof domOptions === 'object' && domOptions?.signal) {
+        const abortHandler = () => dispose();
+        domOptions.signal.addEventListener('abort', abortHandler, { once: true });
+    }
+
+    const dispose = () => {
+        if (disposed) {
+            return;
+        }
+        disposed = true;
+        try {
+            target.removeEventListener(eventType, eventHandler, domOptions);
+        } catch (error) {
+            console.warn('addManagedEventListener 移除失败', eventType, error);
+        }
+        cleanup();
+    };
+
+    return { dispose };
 }
 
 function addManagedEventListener(target, eventType, listener, options) {
     if (!target || typeof target.addEventListener !== 'function') {
         return () => {};
     }
-    const normalized = normalizeEventListenerOptions(eventType, options);
-    target.addEventListener(eventType, listener, normalized);
-    return () => target.removeEventListener(eventType, listener, normalized);
+
+    const bindingRef = {
+        dispose: () => {},
+        disposed: true,
+    };
+
+    const attach = (nextOptions, skipPassiveFallback = false) => {
+        bindingRef.dispose();
+        const binding = internalAttach(target, eventType, listener, nextOptions, skipPassiveFallback, attach, bindingRef);
+        bindingRef.disposed = false;
+        bindingRef.dispose = () => {
+            if (bindingRef.disposed) {
+                return;
+            }
+            bindingRef.disposed = true;
+            binding.dispose();
+        };
+    };
+
+    attach(options);
+
+    return () => bindingRef.dispose();
 }
 
 function scheduleLowPriorityTask(callback, { priority = 'background', delay = 0 } = {}) {
@@ -971,6 +1391,17 @@ let chatOffscreenEnabled = false;
 const chatOffscreenPlaceholderMap = new WeakMap();
 const chatOffscreenPlaceholderSet = new Set();
 
+const MANAGED_LAZY_ATTR = 'data-managed-lazy-image';
+const MANAGED_LAZY_STATE_ATTR = 'data-lazy-state';
+const MANAGED_LAZY_STATE_PENDING = 'pending';
+const MANAGED_LAZY_STATE_LOADING = 'loading';
+const MANAGED_LAZY_STATE_LOADED = 'loaded';
+
+/** @type {WeakMap<HTMLImageElement, ManagedLazyImageMeta>} */
+const chatLazyImageRegistry = new WeakMap();
+/** @type {IntersectionObserver|null|undefined} */
+let chatLazyImageObserver;
+
 function shouldUseChatOffscreen() {
     if (!chatElement.length) {
         return false;
@@ -1001,6 +1432,324 @@ function ensureChatOffscreenManager() {
 }
 
 /**
+ * @returns {IntersectionObserver|null}
+ */
+function ensureChatLazyImageObserver() {
+    if (typeof chatLazyImageObserver !== 'undefined') {
+        return chatLazyImageObserver;
+    }
+    if (typeof IntersectionObserver !== 'function') {
+        chatLazyImageObserver = null;
+        return chatLazyImageObserver;
+    }
+    const observerRoot = chatElement?.[0] instanceof Element ? chatElement[0] : null;
+    chatLazyImageObserver = new IntersectionObserver((entries) => {
+        entries.forEach((entry) => {
+            if (!entry.isIntersecting) {
+                return;
+            }
+            if (entry.target instanceof HTMLImageElement) {
+                revealManagedLazyImage(entry.target);
+            }
+        });
+    }, {
+        root: observerRoot,
+        rootMargin: '256px 0px',
+        threshold: 0.01,
+    });
+    return chatLazyImageObserver;
+}
+
+/**
+ * @param {Element} element
+ * @param {IntersectionObserver|null} observer
+ * @returns {boolean}
+ */
+function isElementVisibleInObserverRoot(element, observer) {
+    if (!(element instanceof Element)) {
+        return false;
+    }
+    if (!observer) {
+        return true;
+    }
+    const rect = element.getBoundingClientRect();
+    if (!rect || (rect.width === 0 && rect.height === 0)) {
+        return false;
+    }
+    if (observer.root instanceof Element) {
+        const rootRect = observer.root.getBoundingClientRect();
+        return rect.bottom >= rootRect.top && rect.top <= rootRect.bottom + 256;
+    }
+    const viewportHeight = globalThis.innerHeight || 0;
+    return rect.bottom >= 0 && rect.top <= viewportHeight + 256;
+}
+
+/**
+ * @param {HTMLImageElement} img
+ * @param {string} src
+ * @param {ManagedLazyImageOptions} [options]
+ */
+function registerChatLazyImage(img, src, options = {}) {
+    if (!(img instanceof HTMLImageElement)) {
+        return;
+    }
+    if (typeof src !== 'string' || src.length === 0) {
+        return;
+    }
+    const normalizedSrc = src;
+    const previousMeta = chatLazyImageRegistry.get(img) ?? null;
+    const nextOptions = {
+        allowSuspend: options.allowSuspend !== false,
+        releaseOnSuspend: options.releaseOnSuspend === true,
+        releaseOnCleanup: options.releaseOnCleanup === true,
+        retryOnError: options.retryOnError !== false,
+    };
+
+    if (previousMeta && previousMeta.src === normalizedSrc) {
+        previousMeta.options = nextOptions;
+        if (previousMeta.loaded || previousMeta.loading) {
+            return;
+        }
+        previousMeta.loading = false;
+        previousMeta.loaded = false;
+        previousMeta.failed = false;
+    } else {
+        if (previousMeta && typeof chatLazyImageObserver !== 'undefined' && chatLazyImageObserver) {
+            chatLazyImageObserver.unobserve(img);
+        }
+        chatLazyImageRegistry.set(img, {
+            src: normalizedSrc,
+            loading: false,
+            loaded: false,
+            failed: false,
+            options: nextOptions,
+        });
+    }
+
+    img.setAttribute(MANAGED_LAZY_ATTR, '1');
+    img.setAttribute(MANAGED_LAZY_STATE_ATTR, MANAGED_LAZY_STATE_PENDING);
+    if (img.src) {
+        img.removeAttribute('src');
+    }
+
+    const observer = ensureChatLazyImageObserver();
+    if (!observer) {
+        const meta = chatLazyImageRegistry.get(img);
+        if (meta) {
+            startLazyImageLoad(img, meta);
+        }
+        return;
+    }
+
+    observer.observe(img);
+    const meta = chatLazyImageRegistry.get(img);
+    if (meta && isElementVisibleInObserverRoot(img, observer)) {
+        startLazyImageLoad(img, meta);
+    }
+}
+
+/**
+ * @param {HTMLImageElement} img
+ * @returns {ManagedLazyImageMeta|null}
+ */
+function getManagedLazyImageMeta(img) {
+    if (!(img instanceof HTMLImageElement)) {
+        return null;
+    }
+    return chatLazyImageRegistry.get(img) ?? null;
+}
+
+/**
+ * @param {HTMLImageElement} img
+ * @param {ManagedLazyImageMeta} meta
+ */
+function startLazyImageLoad(img, meta) {
+    if (!meta || meta.loading || meta.loaded) {
+        return;
+    }
+    if (meta.failed && !meta.options.retryOnError) {
+        return;
+    }
+    meta.loading = true;
+    img.setAttribute(MANAGED_LAZY_STATE_ATTR, MANAGED_LAZY_STATE_LOADING);
+    img.src = meta.src;
+}
+
+/**
+ * @param {HTMLImageElement} img
+ */
+function revealManagedLazyImage(img) {
+    const meta = getManagedLazyImageMeta(img);
+    if (!meta) {
+        return;
+    }
+    startLazyImageLoad(img, meta);
+}
+
+/**
+ * @param {HTMLImageElement} img
+ */
+function suspendManagedLazyImage(img) {
+    const meta = getManagedLazyImageMeta(img);
+    if (!meta || !meta.options.allowSuspend || !meta.loaded) {
+        return;
+    }
+    meta.loaded = false;
+    meta.loading = false;
+    img.setAttribute(MANAGED_LAZY_STATE_ATTR, MANAGED_LAZY_STATE_PENDING);
+    if (meta.options.releaseOnSuspend && img.src && img.src.startsWith('blob:')) {
+        try {
+            URL.revokeObjectURL(img.src);
+        } catch (error) {
+            console.warn('释放对象 URL 失败', error);
+        }
+    }
+    img.removeAttribute('src');
+    const observer = ensureChatLazyImageObserver();
+    observer?.observe(img);
+}
+
+/**
+ * @param {HTMLImageElement} img
+ */
+function resumeManagedLazyImage(img) {
+    const meta = getManagedLazyImageMeta(img);
+    if (!meta || meta.loading || meta.loaded) {
+        return;
+    }
+    const observer = ensureChatLazyImageObserver();
+    if (!observer) {
+        startLazyImageLoad(img, meta);
+        return;
+    }
+    observer.observe(img);
+    if (isElementVisibleInObserverRoot(img, observer)) {
+        startLazyImageLoad(img, meta);
+    }
+}
+
+/**
+ * @param {HTMLImageElement} node
+ * @returns {string}
+ */
+function resolveAvatarSource(node) {
+    if (!(node instanceof HTMLImageElement)) {
+        return '';
+    }
+    let src = node.getAttribute('data-avatar-src') || node.getAttribute('data-original-src') || node.getAttribute('src') || '';
+    if (typeof src === 'string' && src.trim().length) {
+        return src;
+    }
+    const messageRoot = node.closest('.mes');
+    if (messageRoot instanceof HTMLElement) {
+        const forceAvatar = messageRoot.getAttribute('force_avatar');
+        if (forceAvatar && forceAvatar.trim().length) {
+            return forceAvatar;
+        }
+        if (messageRoot.getAttribute('is_user') === 'true') {
+            if (typeof user_avatar === 'string' && user_avatar.length) {
+                return getThumbnailUrl('persona', user_avatar);
+            }
+            return default_user_avatar;
+        }
+        if (messageRoot.getAttribute('is_system') === 'true') {
+            if (typeof system_avatar === 'string' && system_avatar.length) {
+                return system_avatar;
+            }
+            return default_avatar;
+        }
+    }
+    return default_avatar;
+}
+
+/**
+ * @param {Element} root
+ * @param {{ release?: boolean }} [options]
+ */
+function cleanupManagedLazyImages(root, { release = false } = {}) {
+    if (!(root instanceof Element)) {
+        return;
+    }
+    const nodes = root instanceof HTMLImageElement
+        ? [root]
+        : Array.from(root.querySelectorAll(`[${MANAGED_LAZY_ATTR}=\"1\"]`));
+    nodes.forEach((node) => {
+        if (!(node instanceof HTMLImageElement)) {
+            return;
+        }
+        if (typeof chatLazyImageObserver !== 'undefined' && chatLazyImageObserver) {
+            chatLazyImageObserver.unobserve(node);
+        }
+        const meta = chatLazyImageRegistry.get(node);
+        if (meta && (release || meta.options.releaseOnCleanup) && node.src && node.src.startsWith('blob:')) {
+            try {
+                URL.revokeObjectURL(node.src);
+            } catch (error) {
+                console.warn('释放对象 URL 失败', error);
+            }
+        }
+        chatLazyImageRegistry.delete(node);
+        node.removeAttribute(MANAGED_LAZY_ATTR);
+        node.removeAttribute(MANAGED_LAZY_STATE_ATTR);
+        node.removeAttribute('data-managed-src');
+    });
+}
+
+function refreshManagedChatAvatars() {
+    forEachMountedMessage((_, element) => {
+        if (!(element instanceof Element)) {
+            return;
+        }
+        const avatar = element.querySelector('.avatar img');
+        if (!(avatar instanceof HTMLImageElement)) {
+            return;
+        }
+        const desiredSrc = resolveAvatarSource(avatar);
+        if (!desiredSrc) {
+            return;
+        }
+        avatar.setAttribute('data-avatar-src', desiredSrc);
+        const meta = getManagedLazyImageMeta(avatar);
+        if (meta) {
+            if (meta.src !== desiredSrc) {
+                meta.src = desiredSrc;
+                meta.failed = false;
+                meta.loaded = false;
+                meta.loading = false;
+                avatar.removeAttribute('src');
+                startLazyImageLoad(avatar, meta);
+            } else if (!avatar.getAttribute('src')) {
+                startLazyImageLoad(avatar, meta);
+            }
+            return;
+        }
+        registerChatLazyImage(avatar, desiredSrc, {
+            allowSuspend: false,
+            releaseOnSuspend: false,
+            releaseOnCleanup: false,
+            retryOnError: true,
+        });
+    });
+}
+
+/**
+ * @typedef {object} ManagedLazyImageOptions
+ * @property {boolean} [allowSuspend]
+ * @property {boolean} [releaseOnSuspend]
+ * @property {boolean} [releaseOnCleanup]
+ * @property {boolean} [retryOnError]
+ */
+
+/**
+ * @typedef {object} ManagedLazyImageMeta
+ * @property {string} src
+ * @property {boolean} loading
+ * @property {boolean} loaded
+ * @property {boolean} failed
+ * @property {ManagedLazyImageOptions} options
+ */
+
+/**
  * @param {Element} placeholder
  * @param {OffscreenEntryMeta} meta
  */
@@ -1022,6 +1771,11 @@ function handleChatOffscreenLeave(placeholder, meta = {}) {
     if (!height || !Number.isFinite(height)) {
         return;
     }
+    content.querySelectorAll(`[${MANAGED_LAZY_ATTR}=\"1\"]`).forEach((node) => {
+        if (node instanceof HTMLImageElement) {
+            suspendManagedLazyImage(node);
+        }
+    });
     placeholder.style.height = `${height}px`;
     placeholder.classList.add(CHAT_OFFSCREEN_PLACEHOLDER_CLASS, 'active');
     content.style.display = 'none';
@@ -1058,6 +1812,11 @@ function handleChatOffscreenEnter(placeholder, meta = {}) {
         placeholder.style.height = '0px';
         chatOffscreenManager?.mergeMeta(placeholder, { detached: false });
     }
+    content.querySelectorAll(`[${MANAGED_LAZY_ATTR}=\"1\"]`).forEach((node) => {
+        if (node instanceof HTMLImageElement) {
+            resumeManagedLazyImage(node);
+        }
+    });
 }
 
 /**
@@ -1066,6 +1825,10 @@ function handleChatOffscreenEnter(placeholder, meta = {}) {
 function cleanupChatOffscreenEntry(placeholder) {
     if (!(placeholder instanceof Element)) {
         return;
+    }
+    const meta = chatOffscreenManager?.getMeta?.(placeholder);
+    if (meta?.content instanceof Element) {
+        cleanupManagedLazyImages(meta.content, { release: true });
     }
     placeholder.classList.remove('active');
     placeholder.style.height = '';
@@ -1144,6 +1907,7 @@ function unbindChatOffscreenForMessage(element) {
         manager.untrack(placeholder);
     }
     chatOffscreenPlaceholderSet.delete(placeholder);
+    cleanupManagedLazyImages(element, { release: true });
     if (placeholder.isConnected) {
         placeholder.remove();
     }
@@ -1163,6 +1927,12 @@ function disableChatOffscreen() {
                 meta.content.classList.remove(CHAT_OFFSCREEN_CONTENT_HIDDEN_CLASS);
                 meta.content.removeAttribute('aria-hidden');
                 meta.content.removeAttribute(CHAT_OFFSCREEN_DATA_FLAG);
+                meta.content.querySelectorAll(`[${MANAGED_LAZY_ATTR}=\"1\"]`).forEach((node) => {
+                    if (node instanceof HTMLImageElement) {
+                        resumeManagedLazyImage(node);
+                    }
+                });
+                cleanupManagedLazyImages(meta.content);
                 chatOffscreenPlaceholderMap.delete(meta.content);
             }
             manager.untrack(placeholder);
@@ -1246,6 +2016,9 @@ eventSource.on(event_types.SETTINGS_UPDATED, () => {
         return;
     }
     refreshChatOffscreenState();
+});
+eventSource.on(event_types.USER_AVATAR_UPDATED, () => {
+    refreshManagedChatAvatars();
 });
 const chatRenderingEnv = {
     getChat: () => chat,
@@ -1773,7 +2546,6 @@ let showdownHtmlCache = new Map();
 
 const RENDER_SPLIT_THRESHOLD = 12000;
 const BODY_POINTER_THROTTLE_MS = 40;
-let lastBodyPointerTimestamp = 0;
 const dynamicStyleRegistry = new Map();
 const DYNAMIC_STYLE_ANCHOR_SELECTOR = 'meta[data-st-dynamic-style-anchor="true"]';
 const EXTERNAL_STYLE_ANCHOR_SELECTOR = 'meta[data-st-external-style-anchor="true"]';
@@ -5010,8 +5782,10 @@ export function appendMediaToMessage(mes, messageElement, adjustScroll = true) {
         }
         const chatHeight = $('#chat').prop('scrollHeight');
         const image = container.find('.mes_img');
+        const imageNode = image.get(0);
         const text = messageElement.find('.mes_text');
         const isInline = !!mes.extra?.inline_image;
+        const imageSrc = typeof mes.extra?.image === 'string' ? mes.extra.image : '';
         const doAdjustScroll = () => {
             if (!adjustScroll) {
                 return;
@@ -5022,19 +5796,51 @@ export function appendMediaToMessage(mes, messageElement, adjustScroll = true) {
             $('#chat').scrollTop(scrollPosition + diff);
         };
         image.off('load').on('load', function () {
-            image.removeAttr('alt');
-            image.removeClass('error');
+            if (!(this instanceof HTMLImageElement)) {
+                return;
+            }
+            const meta = getManagedLazyImageMeta(this);
+            if (meta) {
+                meta.loading = false;
+                meta.loaded = true;
+                this.setAttribute(MANAGED_LAZY_STATE_ATTR, MANAGED_LAZY_STATE_LOADED);
+            }
+            this.removeAttribute('alt');
+            $(this).removeClass('error');
             doAdjustScroll();
         });
         image.off('error').on('error', function () {
-            image.attr('alt', '');
-            image.addClass('error');
+            if (!(this instanceof HTMLImageElement)) {
+                return;
+            }
+            const meta = getManagedLazyImageMeta(this);
+            if (meta) {
+                meta.loading = false;
+                meta.failed = true;
+            }
+            this.setAttribute('alt', '');
+            $(this).addClass('error');
             doAdjustScroll();
         });
-        image.attr('src', mes.extra?.image);
         image.attr('title', mes.extra?.title || mes.title || '');
         image.attr('loading', 'lazy');
         image.attr('decoding', 'async');
+        if (!image.attr('referrerpolicy')) {
+            image.attr('referrerpolicy', 'no-referrer');
+        }
+        if (imageNode && imageSrc) {
+            image.attr('data-managed-src', imageSrc);
+            registerChatLazyImage(imageNode, imageSrc, {
+                allowSuspend: !isInline,
+                releaseOnSuspend: false,
+                releaseOnCleanup: imageSrc.startsWith('blob:'),
+                retryOnError: true,
+            });
+        } else if (imageNode) {
+            cleanupManagedLazyImages(imageNode, { release: true });
+            image.removeAttr('src');
+            image.removeAttr('data-managed-src');
+        }
         container.addClass('img_extra');
         image.toggleClass('img_inline', isInline);
         text.toggleClass('displayNone', !isInline);
@@ -5064,6 +5870,7 @@ export function appendMediaToMessage(mes, messageElement, adjustScroll = true) {
     } else {
         const container = messageElement.find('.mes_img_container');
         if (container.length) {
+            cleanupManagedLazyImages(container.get(0), { release: true });
             container.remove();
         }
         const text = messageElement.find('.mes_text');
@@ -5127,6 +5934,28 @@ function enableLazyMediaResources(messageElement) {
             node.decoding = node.decoding || 'async';
             node.referrerPolicy = node.referrerPolicy || 'no-referrer';
         }
+    });
+
+    const avatarImages = messageElement.find('.avatar img').get();
+    avatarImages.forEach((node) => {
+        if (!(node instanceof HTMLImageElement)) {
+            return;
+        }
+        const originalSrc = resolveAvatarSource(node);
+        if (!originalSrc) {
+            return;
+        }
+        node.setAttribute('data-avatar-src', originalSrc);
+        node.setAttribute('data-original-src', originalSrc);
+        node.loading = node.loading || 'lazy';
+        node.decoding = node.decoding || 'async';
+        node.referrerPolicy = node.referrerPolicy || 'no-referrer';
+        registerChatLazyImage(node, originalSrc, {
+            allowSuspend: false,
+            releaseOnSuspend: false,
+            releaseOnCleanup: false,
+            retryOnError: true,
+        });
     });
 
     const frames = messageElement.find('.mes_text iframe').get();
@@ -5609,7 +6438,14 @@ function cloneMessageObject(value) {
  * @typedef {Object} ExtensionEventOptions
  * @property {boolean} [once]
  * @property {boolean} [capture]
- * @property {boolean} [passive]
+ * @property {boolean|'auto'} [passive]
+ * @property {boolean} [optimized]
+ * @property {number|boolean} [throttle]
+ * @property {{ leading?: boolean, trailing?: boolean }} [throttleOptions]
+ * @property {number|boolean} [debounce]
+ * @property {'animation'|'raf'|'idle'|'microtask'|'sync'} [defer]
+ * @property {'user-blocking'|'user-visible'|'background'} [priority]
+ * @property {boolean} [passiveFallback]
  */
 
 /**
@@ -5635,7 +6471,11 @@ function createExtensionEventsApi() {
         if (record.kind === 'eventSource') {
             eventSource.removeListener(record.eventName, record.listener);
         } else if (record.kind === 'dom') {
-            record.target.removeEventListener(record.eventName, record.listener, record.options);
+            if (typeof record.dispose === 'function') {
+                record.dispose();
+            } else if (record.target?.removeEventListener) {
+                record.target.removeEventListener(record.eventName, record.listener, record.options);
+            }
         }
         return true;
     };
@@ -5661,10 +6501,17 @@ function createExtensionEventsApi() {
             EXT_EVENT_REGISTRY.set(token, { kind: 'eventSource', eventName, listener: wrapped });
         } else {
             const target = EXT_DOM_EVENT_TARGETS.get(eventName) || document;
-            const domOptions = {
+            const managedOptions = {
                 capture: Boolean(options.capture),
-                passive: options.passive ?? false,
+                passive: options.passive ?? 'auto',
                 once: Boolean(options.once),
+                optimized: options.optimized !== false,
+                throttle: options.throttle ?? options.throttleMs,
+                throttleOptions: options.throttleOptions,
+                debounce: options.debounce ?? options.debounceMs,
+                defer: options.defer ?? options.frame,
+                priority: options.priority ?? options.schedulerPriority,
+                passiveFallback: options.passiveFallback,
             };
             const wrapped = (event) => {
                 safeCallExtensionHandler(handler, [event]);
@@ -5672,8 +6519,15 @@ function createExtensionEventsApi() {
                     releaseToken(token);
                 }
             };
-            target.addEventListener(eventName, wrapped, domOptions);
-            EXT_EVENT_REGISTRY.set(token, { kind: 'dom', eventName, listener: wrapped, target, options: domOptions });
+            const dispose = addManagedEventListener(target, eventName, wrapped, managedOptions);
+            EXT_EVENT_REGISTRY.set(token, {
+                kind: 'dom',
+                eventName,
+                listener: wrapped,
+                target,
+                options: managedOptions,
+                dispose,
+            });
         }
 
         return {
@@ -11796,6 +12650,7 @@ async function read_avatar_load(input) {
         }
 
         console.log('Avatar refreshed');
+        refreshManagedChatAvatars();
     }
 }
 
@@ -16203,12 +17058,6 @@ jQuery(async function () {
     $('.drawer-toggle').on('click', doNavbarIconClick);
 
     const handleBodyPointerDown = async (event) => {
-        const now = performance.now();
-        if (now - lastBodyPointerTimestamp < BODY_POINTER_THROTTLE_MS) {
-            return;
-        }
-        lastBodyPointerTimestamp = now;
-
         const clickTarget = $(event.target);
 
         if (isExportPopupOpen
@@ -16248,7 +17097,10 @@ jQuery(async function () {
             }
         }
     };
-    addManagedEventListener(document.body, 'pointerdown', handleBodyPointerDown);
+    addManagedEventListener(document.body, 'pointerdown', handleBodyPointerDown, {
+        throttle: BODY_POINTER_THROTTLE_MS,
+        passive: 'auto',
+    });
 
     const handleInlineDrawerToggle = async (toggleElement, eventTarget) => {
         if (eventTarget.classList?.contains('text_pole')) {
@@ -16338,12 +17190,42 @@ jQuery(async function () {
 
     $chat.on('click', '.mes .avatar', function () {
         const messageElement = $(this).closest('.mes');
-        const thumbURL = $(this).children('img').attr('src');
-        const charsPath = '/characters/';
-        if (typeof thumbURL !== 'string' || !thumbURL.length) {
-            console.warn('Avatar zoom skipped: missing thumbnail src', { thumbURL });
-            return;
+    const avatarImg = $(this).children('img');
+    const imgElement = avatarImg.get(0);
+    let thumbURL = avatarImg.attr('src') || avatarImg.attr('data-avatar-src') || '';
+    if (imgElement instanceof HTMLImageElement) {
+        const meta = getManagedLazyImageMeta(imgElement);
+        if (meta && (!thumbURL || !thumbURL.length)) {
+            if (!imgElement.getAttribute('src')) {
+                startLazyImageLoad(imgElement, meta);
+            }
+            thumbURL = meta.src || thumbURL;
         }
+        if (!thumbURL || !thumbURL.length) {
+            thumbURL = resolveAvatarSource(imgElement);
+            if (thumbURL) {
+                avatarImg.attr('data-avatar-src', thumbURL);
+            }
+        }
+    } else if (!thumbURL || !thumbURL.length) {
+        const forceAvatar = messageElement.attr('force_avatar');
+        if (forceAvatar) {
+            thumbURL = forceAvatar;
+        } else if (messageElement.attr('is_user') === 'true') {
+            thumbURL = typeof user_avatar === 'string' && user_avatar.length
+                ? getThumbnailUrl('persona', user_avatar)
+                : default_user_avatar;
+        } else if (messageElement.attr('is_system') === 'true') {
+            thumbURL = system_avatar || default_avatar;
+        } else {
+            thumbURL = default_avatar;
+        }
+    }
+    const charsPath = '/characters/';
+    if (typeof thumbURL !== 'string' || !thumbURL.length) {
+        console.warn('Avatar zoom skipped: missing thumbnail src', { thumbURL });
+        return;
+    }
         const separatorIndex = thumbURL.lastIndexOf('=');
         const targetAvatarImg = separatorIndex >= 0 ? thumbURL.substring(separatorIndex + 1) : thumbURL.substring(thumbURL.lastIndexOf('/') + 1);
         const charname = targetAvatarImg.replace('.png', '');
