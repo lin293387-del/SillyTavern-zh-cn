@@ -2610,12 +2610,19 @@ function setRightPanelVirtualItems(items, { restoreScrollTop } = {}) {
             rightPanelGroupIndexById.set(String(item.id), i);
         }
     }
+    const container = getRightPanelContainerElement();
     if (rightPanelVirtualList) {
         rightPanelVirtualList.setDataLength(items.length);
-        rightPanelVirtualList.refresh();
-    }
-    const container = getRightPanelContainerElement();
-    if (container && typeof restoreScrollTop === 'number') {
+        // 依据当前滚动状态立即计算可视窗口，防止面板固定开启时出现空白或滚动跳动
+        const scrollElement = rightPanelVirtualList.scrollElement ?? container ?? null;
+        if (scrollElement && typeof restoreScrollTop === 'number') {
+            scrollElement.scrollTop = restoreScrollTop;
+        }
+        const viewportHeight = scrollElement?.clientHeight ?? container?.clientHeight ?? 0;
+        const referenceScrollTop = scrollElement?.scrollTop ?? (typeof restoreScrollTop === 'number' ? restoreScrollTop : 0);
+        const { start, end } = rightPanelVirtualList.computeWindowFromScroll(referenceScrollTop, viewportHeight);
+        rightPanelVirtualList.setWindow(start, end);
+    } else if (container && typeof restoreScrollTop === 'number') {
         container.scrollTop = restoreScrollTop;
     }
 }

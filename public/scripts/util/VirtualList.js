@@ -104,6 +104,12 @@ class VirtualList {
         this.bottomSpacer.dataset.virtualSpacer = 'bottom';
         this.topSpacer.style.height = '0px';
         this.bottomSpacer.style.height = '0px';
+        this.topSpacer.style.flex = '0 0 auto';
+        this.bottomSpacer.style.flex = '0 0 auto';
+        this.topSpacer.style.width = '100%';
+        this.bottomSpacer.style.width = '100%';
+        this.topSpacer.style.pointerEvents = 'none';
+        this.bottomSpacer.style.pointerEvents = 'none';
 
         container.innerHTML = '';
         container.append(this.topSpacer, this.bottomSpacer);
