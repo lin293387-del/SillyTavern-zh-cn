@@ -2566,6 +2566,7 @@ function initRightPanelVirtualList() {
     if (!container) {
         return;
     }
+    container.setAttribute('data-virtualized', 'true');
     rightPanelVirtualList = new VirtualList({
         container,
         getItemCount: () => rightPanelVirtualEntities.length,
@@ -2586,6 +2587,8 @@ function destroyRightPanelVirtualList() {
         rightPanelVirtualList.destroy();
         rightPanelVirtualList = null;
     }
+    const container = getRightPanelContainerElement();
+    container?.removeAttribute('data-virtualized');
     rightPanelVirtualEntities = [];
     rightPanelDomRegistry.clear();
     rightPanelIndexByKey.clear();
@@ -2611,7 +2614,15 @@ function setRightPanelVirtualItems(items, { restoreScrollTop } = {}) {
         }
     }
     const container = getRightPanelContainerElement();
+    if (container) {
+        if (rightPanelVirtualList) {
+            container.setAttribute('data-virtualized', 'true');
+        } else {
+            container.removeAttribute('data-virtualized');
+        }
+    }
     if (rightPanelVirtualList) {
+        rightPanelVirtualList.resetMeasurements(items.length);
         rightPanelVirtualList.setDataLength(items.length);
         // 依据当前滚动状态立即计算可视窗口，防止面板固定开启时出现空白或滚动跳动
         const scrollElement = rightPanelVirtualList.scrollElement ?? container ?? null;

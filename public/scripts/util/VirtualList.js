@@ -137,6 +137,46 @@ class VirtualList {
         this.estimatedItemHeight = Math.max(1, Number(value) || 1);
     }
 
+    resetMeasurements(length = this.values.length) {
+        const target = Math.max(0, Number(length) || 0);
+        if (this.pendingFrame) {
+            cancelAnimationFrame(this.pendingFrame);
+            this.pendingFrame = null;
+        }
+        for (const [key, record] of Array.from(this.rendered.entries())) {
+            const element = record?.element ?? null;
+            if (typeof this.onUnmount === 'function' && element) {
+                try {
+                    this.onUnmount(record.index ?? 0, element, { key, reset: true });
+                } catch (error) {
+                    console.error('VirtualList onUnmount handler failed during reset', error);
+                }
+            }
+            if (element?.isConnected) {
+                element.remove();
+            }
+        }
+        this.rendered.clear();
+        this.values.length = 0;
+        this.measured.length = 0;
+        this.fenwick = new FenwickTree(0);
+        this.measureQueue.clear();
+        this.invalidateRange();
+        if (this.spacerUpdateFrame !== null) {
+            cancelAnimationFrame(this.spacerUpdateFrame);
+            this.spacerUpdateFrame = null;
+        }
+        this.nextSpacerHeights = null;
+        this.spacerHeights = { top: '0px', bottom: '0px' };
+        if (target > 0) {
+            this.ensureCapacity(target);
+        }
+    }
+
+    invalidateRange() {
+        this.currentRange = { start: -1, end: -1 };
+    }
+
     ensureCapacity(length) {
         if (length <= this.values.length) {
             return;

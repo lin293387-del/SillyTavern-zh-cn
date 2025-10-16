@@ -2808,6 +2808,17 @@ input[type="file"] {
     padding: 1px;
 }
 
+#rm_print_characters_block[data-virtualized="true"] {
+    overflow-anchor: none;
+    contain: layout paint;
+}
+
+#rm_print_characters_block[data-virtualized="true"] > [data-virtual-spacer] {
+    flex: 0 0 auto;
+    width: 100%;
+    pointer-events: none;
+}
+
 #rm_print_characters_block .entity_block.useless {
     opacity: 0.25;
 }
