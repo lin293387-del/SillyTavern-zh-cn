@@ -177,6 +177,28 @@ class VirtualList {
         this.currentRange = { start: -1, end: -1 };
     }
 
+    getAnchorRecord() {
+        if (!this.rendered || this.rendered.size === 0) {
+            return null;
+        }
+        const startIndex = Math.max(0, this.currentRange.start || 0);
+        let candidate = null;
+        let fallback = null;
+        for (const record of this.rendered.values()) {
+            if (!record?.element) {
+                continue;
+            }
+            if (record.index >= startIndex) {
+                if (!candidate || record.index < candidate.index) {
+                    candidate = record;
+                }
+            } else if (!fallback || record.index > fallback.index) {
+                fallback = record;
+            }
+        }
+        return candidate ?? fallback;
+    }
+
     ensureCapacity(length) {
         if (length <= this.values.length) {
             return;
@@ -246,6 +268,21 @@ class VirtualList {
             cancelAnimationFrame(this.pendingFrame);
             this.pendingFrame = null;
         }
+        const scrollElement = this.scrollElement ?? this.container;
+        let anchorSnapshot = null;
+        if (scrollElement instanceof HTMLElement) {
+            const anchorRecord = this.getAnchorRecord();
+            const anchorElement = anchorRecord?.element;
+            if (anchorElement instanceof HTMLElement && anchorElement.isConnected) {
+                const scrollRect = scrollElement.getBoundingClientRect();
+                const elementRect = anchorElement.getBoundingClientRect();
+                anchorSnapshot = {
+                    element: anchorElement,
+                    top: elementRect.top - scrollRect.top,
+                };
+            }
+        }
+        const hadMeasurements = this.measureQueue.size > 0;
         for (const [index, element] of this.measureQueue) {
             const height = element.offsetHeight;
             this.updateHeight(index, height);
@@ -255,6 +292,30 @@ class VirtualList {
         }
         this.measureQueue.clear();
         this.updateSpacers();
+        if (anchorSnapshot && scrollElement instanceof HTMLElement) {
+            const { element, top } = anchorSnapshot;
+            if (element.isConnected) {
+                const scrollRect = scrollElement.getBoundingClientRect();
+                const elementRect = element.getBoundingClientRect();
+                const delta = elementRect.top - scrollRect.top - top;
+                if (Number.isFinite(delta) && Math.abs(delta) > 0.5) {
+                    scrollElement.scrollTop = Math.max(0, scrollElement.scrollTop - delta);
+                }
+            }
+        }
+        if (hadMeasurements && scrollElement instanceof HTMLElement) {
+            const viewport = scrollElement.clientHeight || 0;
+            const totalHeight = this.getTotalHeight();
+            if (Number.isFinite(totalHeight) && viewport >= 0) {
+                const maxScroll = Math.max(0, totalHeight - viewport);
+                if (scrollElement.scrollTop > maxScroll) {
+                    scrollElement.scrollTop = maxScroll;
+                }
+                if (scrollElement.scrollTop < 0) {
+                    scrollElement.scrollTop = 0;
+                }
+            }
+        }
     }
 
     notifyItemMutated(index) {
